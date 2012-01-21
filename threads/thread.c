@@ -11,6 +11,7 @@
 #include "threads/switch.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
+#include "devices/timer.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -27,6 +28,10 @@ static struct list ready_list;
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
+
+/* List of processes currently in sleep. Added upon call to timer_sleep
+   removed when added to ready_list */
+static struct list sleep_list;
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -92,6 +97,7 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
+  list_init (&sleep_list);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -545,6 +551,52 @@ thread_schedule_tail (struct thread *prev)
     }
 }
 
+
+/* Comparison function for comparing the sleep values of two thread
+   structs. Returns true if a->sleepwakeup < b->sleepwakeup */
+static bool 
+thread_sleep_cmp(const struct list_elem *a, 
+		      const struct list_elem *b, 
+		      void *aux UNUSED)
+{
+  return list_entry(a, struct thread, sleepelem)->sleepwakeup < 
+    list_entry(b, struct thread, sleepelem)->sleepwakeup;
+}
+
+/* Puts a thread to sleep until the given wakeuptime. The thread is
+   inserted into the sleep_list and then blocked
+ */
+void
+thread_sleep (int64_t wakeuptime)
+{
+  enum intr_level old_level = intr_disable ();
+  struct thread* cur = thread_current ();
+  cur->sleepwakeup = wakeuptime;
+  ASSERT(cur != idle_thread);
+  // Add thread to sleep_list
+  list_insert_ordered(&sleep_list, &cur->sleepelem, thread_sleep_cmp, NULL);
+  // Update status to blocked
+  thread_block();
+  intr_set_level (old_level);
+}
+
+/* Updates sleep threads to determine which if any are ready to be set to unblocked
+ */
+static void
+schedule_update_sleep_threads(void)
+{
+  int64_t time = timer_ticks();
+  while (list_head(&sleep_list) != NULL)
+    {
+      struct thread* sleepelem_front = list_entry(list_head(&sleep_list),
+						  struct thread, sleepelem);
+      if (sleepelem_front->sleepwakeup > time)
+	break;
+      thread_unblock(sleepelem_front);
+      list_pop_front(&sleep_list);      
+    }
+}
+
 /* Schedules a new process.  At entry, interrupts must be off and
    the running process's state must have been changed from
    running to some other state.  This function finds another
@@ -555,6 +607,8 @@ thread_schedule_tail (struct thread *prev)
 static void
 schedule (void) 
 {
+  schedule_update_sleep_threads();
+
   struct thread *cur = running_thread ();
   struct thread *next = next_thread_to_run ();
   struct thread *prev = NULL;
