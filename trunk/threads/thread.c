@@ -555,45 +555,52 @@ thread_schedule_tail (struct thread *prev)
 /* Comparison function for comparing the sleep values of two thread
    structs. Returns true if a->sleepwakeup < b->sleepwakeup */
 static bool 
-thread_sleep_cmp(const struct list_elem *a, 
-		      const struct list_elem *b, 
-		      void *aux UNUSED)
+thread_sleep_cmp (const struct list_elem *a, 
+		  const struct list_elem *b, 
+		  void *aux UNUSED)
 {
-  return list_entry(a, struct thread, sleepelem)->sleepwakeup < 
-    list_entry(b, struct thread, sleepelem)->sleepwakeup;
+  return list_entry (a, struct thread, sleepelem)->sleepwakeup < 
+         list_entry (b, struct thread, sleepelem)->sleepwakeup;
 }
 
-/* Puts a thread to sleep until the given wakeuptime. The thread is
+/* Puts a thread to sleep until the given wake_time. The thread is
    inserted into the sleep_list and then blocked
  */
 void
-thread_sleep (int64_t wakeuptime)
+thread_sleep (int64_t wake_time)
 {
   enum intr_level old_level = intr_disable ();
   struct thread* cur = thread_current ();
-  cur->sleepwakeup = wakeuptime;
+  cur->sleepwakeup = wake_time;
   ASSERT(cur != idle_thread);
+
   // Add thread to sleep_list
-  list_insert_ordered(&sleep_list, &cur->sleepelem, thread_sleep_cmp, NULL);
+  list_insert_ordered (&sleep_list, &cur->sleepelem, thread_sleep_cmp, NULL);
+
   // Update status to blocked
-  thread_block();
+  thread_block ();
   intr_set_level (old_level);
 }
 
 /* Updates sleep threads to determine which if any are ready to be set to unblocked
  */
 static void
-schedule_update_sleep_threads(void)
+schedule_update_sleep_threads (void)
 {
-  int64_t time = timer_ticks();
-  while (list_head(&sleep_list) != NULL)
+  int64_t time = timer_ticks ();
+  while (list_begin (&sleep_list) != NULL)
     {
-      struct thread* sleepelem_front = list_entry(list_head(&sleep_list),
-						  struct thread, sleepelem);
-      if (sleepelem_front->sleepwakeup > time)
+      struct thread* front_thread = list_entry (list_begin (&sleep_list),
+                                                struct thread, sleepelem);
+
+      /* Since sleep_list is kept in ascending order of sleepwakeup,
+         we need only check that the front elem is not ready to wake.
+         If that's the case, none of the elements are ready. */
+      if (front_thread->sleepwakeup > time)
 	break;
-      thread_unblock(sleepelem_front);
-      list_pop_front(&sleep_list);      
+
+      thread_unblock (front_thread);
+      list_pop_front (&sleep_list);      
     }
 }
 
