@@ -234,6 +234,37 @@ thread_block (void)
   schedule ();
 }
 
+static bool
+thread_priority_cmp (const struct list_elem *a,
+                     const struct list_elem *b,
+                     void *aux UNUSED)
+{
+  return list_entry (a, struct thread, elem)->priority <
+         list_entry (b, struct thread, elem)->priority;
+}
+
+/* Return the maximal priority of all threads, or -1 if
+   no other threads exist. */
+static int
+thread_max_priority ()
+{
+  if (list_begin (&ready_list) != NULL)
+  {
+    struct thread *t = list_entry (list_begin (&ready_list), struct thread, elem);
+    return t->priority;
+  }
+  return -1;
+}
+
+/* Check to see if we're one of the highest-priority threads.
+   If not, yield. */
+static void
+thread_yield_to_max ()
+{
+  if (thread_max_priority () > thread_get_priority ())
+    thread_yield();
+}
+
 /* Transitions a blocked thread T to the ready-to-run state.
    This is an error if T is not blocked.  (Use thread_yield() to
    make the running thread ready.)
@@ -251,8 +282,9 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  list_insert_ordered (&ready_list, &t->elem, thread_priority_cmp, NULL);
   t->status = THREAD_READY;
+	thread_yield_to_max ();
   intr_set_level (old_level);
 }
 
@@ -313,7 +345,7 @@ thread_exit (void)
 /* Yields the CPU.  The current thread is not put to sleep and
    may be scheduled again immediately at the scheduler's whim. */
 void
-thread_yield (void) 
+thread_yield (void)
 {
   struct thread *cur = thread_current ();
   enum intr_level old_level;
@@ -321,8 +353,8 @@ thread_yield (void)
   ASSERT (!intr_context ());
 
   old_level = intr_disable ();
-  if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+  if (cur != idle_thread)
+    list_insert_ordered (&ready_list, &cur->elem, thread_priority_cmp, NULL);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -345,11 +377,14 @@ thread_foreach (thread_action_func *func, void *aux)
     }
 }
 
-/* Sets the current thread's priority to NEW_PRIORITY. */
+/* Sets the current thread's priority to NEW_PRIORITY.
+   If we now have a lower priority than any other thread,
+   we yield. */
 void
 thread_set_priority (int new_priority) 
 {
   thread_current ()->priority = new_priority;
+	thread_yield_to_max ();
 }
 
 /* Returns the current thread's priority. */
@@ -400,13 +435,13 @@ thread_get_recent_cpu (void)
    ready list.  It is returned by next_thread_to_run() as a
    special case when the ready list is empty. */
 static void
-idle (void *idle_started_ UNUSED) 
+idle (void *idle_started_ UNUSED)
 {
   struct semaphore *idle_started = idle_started_;
   idle_thread = thread_current ();
   sema_up (idle_started);
 
-  for (;;) 
+  for (;;)
     {
       /* Let someone else run. */
       intr_disable ();
