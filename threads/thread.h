@@ -128,6 +128,7 @@ const char *thread_name (void);
 
 void thread_exit (void) NO_RETURN;
 void thread_yield (void);
+void thread_yield_to_max (void);
 
 void thread_sleep(int64_t wake_time);
 
