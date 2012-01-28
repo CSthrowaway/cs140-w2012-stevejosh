@@ -241,7 +241,7 @@ thread_block (void)
 /* Comparator for thread priorities. Will result in round-
    robin scheduling for threads of equal priorities, but will
    favor higher priorities in other cases. */
-static bool
+bool
 thread_priority_cmp (const struct list_elem *a,
                      const struct list_elem *b,
                      void *aux UNUSED)
@@ -291,6 +291,7 @@ thread_unblock (struct thread *t)
   ASSERT (t->status == THREAD_BLOCKED);
   list_insert_ordered (&ready_list, &t->elem, thread_priority_cmp, NULL);
   t->status = THREAD_READY;
+	thread_yield_to_max ();
   intr_set_level (old_level);
 }
 
