@@ -76,6 +76,8 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+static void thread_yield_to_max (void);
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -214,6 +216,8 @@ thread_create (const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock (t);
+  /* Yield if the new thread is higher-priority than us */
+	thread_yield_to_max ();
 
   return tid;
 }
@@ -234,6 +238,9 @@ thread_block (void)
   schedule ();
 }
 
+/* Comparator for thread priorities. Will result in round-
+   robin scheduling for threads of equal priorities, but will
+   favor higher priorities in other cases. */
 static bool
 thread_priority_cmp (const struct list_elem *a,
                      const struct list_elem *b,
@@ -246,7 +253,7 @@ thread_priority_cmp (const struct list_elem *a,
 /* Return the maximal priority of all threads, or -1 if
    no other threads exist. */
 static int
-thread_max_priority ()
+thread_max_priority (void)
 {
   if (list_begin (&ready_list) != NULL)
   {
@@ -259,10 +266,10 @@ thread_max_priority ()
 /* Check to see if we're one of the highest-priority threads.
    If not, yield. */
 static void
-thread_yield_to_max ()
+thread_yield_to_max (void)
 {
   if (thread_max_priority () > thread_get_priority ())
-    thread_yield();
+    thread_yield ();
 }
 
 /* Transitions a blocked thread T to the ready-to-run state.
@@ -284,7 +291,6 @@ thread_unblock (struct thread *t)
   ASSERT (t->status == THREAD_BLOCKED);
   list_insert_ordered (&ready_list, &t->elem, thread_priority_cmp, NULL);
   t->status = THREAD_READY;
-	thread_yield_to_max ();
   intr_set_level (old_level);
 }
 
@@ -384,7 +390,7 @@ void
 thread_set_priority (int new_priority) 
 {
   thread_current ()->priority = new_priority;
-	thread_yield_to_max ();
+  thread_yield_to_max ();
 }
 
 /* Returns the current thread's priority. */
