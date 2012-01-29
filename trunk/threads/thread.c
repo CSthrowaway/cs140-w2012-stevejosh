@@ -487,7 +487,7 @@ thread_donate_priority (struct thread *t)
 }
 
 /* Remove the given thread's priority donation.
-   NOTE : Assumes that
+   NOTE : Assumes the following :
      1. The given thread has already made a donation
      2. The donor does not need to recompute effective priority */
 void
@@ -706,26 +706,29 @@ thread_sleep_cmp (const struct list_elem *a,
 }
 
 /* Puts a thread to sleep until the given wake_time. The thread is
-   inserted into the sleep_list and then blocked
- */
+   inserted into the sleep_list and then blocked */
 void
 thread_sleep (int64_t wake_time)
 {
-  enum intr_level old_level = intr_disable ();
-  struct thread* cur = thread_current ();
-  cur->wakeup_time = wake_time;
-  ASSERT(cur != idle_thread);
+  ASSERT(thread_current () != idle_thread);
 
-  // Add thread to sleep_list
-  list_insert_ordered (&sleep_list, &cur->sleep_elem, thread_sleep_cmp, NULL);
+  enum intr_level old_level;
+  old_level = intr_disable ();
+  
+  /* Set our wakeup time appropriately */
+  struct thread *t = thread_current ();
+  t->wakeup_time = wake_time;
 
-  // Update status to blocked
+  /* Add thread to sleep_list, preserve soonest-time-first ordering */
+  list_insert_ordered (&sleep_list, &t->sleep_elem, thread_sleep_cmp, NULL);
+
+  /* Block the thread */
   thread_block ();
   intr_set_level (old_level);
 }
 
-/* Updates sleep threads to determine which if any are ready to be set to unblocked
- */
+/* Updates sleep threads to determine which if any are ready to be set
+   to unblocked */
 static void
 schedule_update_sleep_threads (void)
 {

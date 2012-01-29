@@ -68,7 +68,7 @@ sema_down (struct semaphore *sema)
   old_level = intr_disable ();
   while (sema->value == 0) 
     {
-			list_insert_ordered (&sema->waiters, &thread_current ()->elem, thread_priority_cmp, NULL);  
+			list_push_front (&sema->waiters, &thread_current ()->elem);  
       thread_block ();
     }
   sema->value--;
@@ -113,11 +113,23 @@ sema_up (struct semaphore *sema)
   ASSERT (sema != NULL);
 
   old_level = intr_disable ();
+
+  /* If the list of waiters isn't empty, retrieve and unblock the highest-
+     priority waiter on the list. */
   if (!list_empty (&sema->waiters))
-    thread_unblock (list_entry (list_pop_front (&sema->waiters),
-                                struct thread, elem));
+  {
+    /* NOTE : The "highest priority" waiter will actually be the minimal
+              list element, since priority_cmp is >, but list_min expects <. */
+    struct list_elem *highest_waiter = list_min (&sema->waiters,
+                                                 thread_priority_cmp, NULL);
+    list_remove (highest_waiter);
+    thread_unblock (list_entry (highest_waiter, struct thread, elem));
+  }
   sema->value++;
   intr_set_level (old_level);
+  
+  /* We may have just unblocked a thread with a higher priority than us,
+     in which case we need to yield to it. */
   thread_yield_to_max ();
 }
 
@@ -202,8 +214,9 @@ lock_acquire (struct lock *lock)
   old_level = intr_disable ();
   
   /* If the lock is currently held by someone, then we need to invoke
-     thread_donate_priority to donate our priority to that special someone. */
-  if (lock->holder != NULL) {
+     thread_donate_priority to donate our priority to that special someone. */  
+  if (lock->holder != NULL)
+  {
     thread_current ()->waiting_on = lock;
     thread_donate_priority (thread_current ());
   }
