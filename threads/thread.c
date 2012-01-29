@@ -460,6 +460,13 @@ thread_donation_cmp (const struct list_elem *a,
 void
 thread_donate_priority (struct thread *t)
 {
+  {
+    console_panic ();
+    // Fixed-point unit tests
+    real a = fixed_point_create (100, 1);
+    real b = fixed_point_create (1000, 43);
+    printf("%d\n", fixed_point_round_nearest (fixed_point_divide(b, a) * 43));
+  }
   ASSERT (intr_get_level () == INTR_OFF);
   ASSERT (is_thread (t));
 
