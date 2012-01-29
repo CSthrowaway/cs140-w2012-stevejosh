@@ -7,9 +7,15 @@
 
 typedef int real;
 
+static real fixed_point_create (int num, int denom);
+static real fixed_point_multiply (real x, real y);
+static real fixed_point_divide (real x, real y);
+static int fixed_point_round_down (real x);
+static int fixed_point_round_nearest (real x);
+
 /* Return the real number obtained by dividing integer num by
    integer denom. */
-real
+static real
 fixed_point_create (int num, int denom)
 {
   return (num * F) / denom;
@@ -17,7 +23,7 @@ fixed_point_create (int num, int denom)
 
 /* Return the real number obtained by multiplying two real numbers
    x and y together. */
-real
+static real
 fixed_point_multiply (real x, real y)
 {
   return ((int64_t)x) * y / F;
@@ -25,14 +31,14 @@ fixed_point_multiply (real x, real y)
 
 /* Return the real number obtained by dividing real number x by
    real number y. */
-real
+static real
 fixed_point_divide (real x, real y)
 {
   return ((int64_t)x) * F / y;
 }
 
 /* Return the integer obtained by rounding real number x down */
-int
+static int
 fixed_point_round_down (real x)
 {
   return x / F;
@@ -40,7 +46,7 @@ fixed_point_round_down (real x)
 
 /* Return the integer obtained by rounding real number x to the
    nearest integer. */
-int
+static int
 fixed_point_round_nearest (real x)
 {
   return (x >= 0) ? (x + F/2) / F : (x - F/2) / F;
