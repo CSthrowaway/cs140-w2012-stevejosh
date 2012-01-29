@@ -255,7 +255,8 @@ thread_max_priority (void)
 {
   if (list_begin (&ready_list) != list_end (&ready_list))
   {
-    struct thread *t = list_entry (list_begin (&ready_list), struct thread, elem);
+    struct thread *t = list_entry (list_begin (&ready_list),
+                                   struct thread, elem);
     return t->priority;
   }
   return -1;
@@ -381,13 +382,55 @@ thread_foreach (thread_action_func *func, void *aux)
     }
 }
 
+/* Returns the thread t's maximal donated priority, or
+   PRI_MIN if the thread has no priority donations in effect. */
+static int
+thread_get_donated_priority (struct thread *t)
+{
+  ASSERT (is_thread (t));
+  
+  if (list_begin (&t->priority_donations) != list_end (&t->priority_donations))
+  {
+    struct thread *top = list_entry (list_begin (&t->priority_donations),
+                                     struct thread, donation_elem);
+    return top->priority;
+  }
+  return -1;
+}
+
+/* Calculates and sets the current thread's priority, taking
+   into consideration all priority donations that are in effect,
+   as well as the thread's base priority. */
+void
+thread_calculate_priority (struct thread *t)
+{
+  ASSERT (is_thread (t));
+  
+  int donated_priority = thread_get_donated_priority (t);
+  if (donated_priority > t->base_priority)
+    t->priority = donated_priority;
+  else
+    t->priority = t->base_priority;
+
+  if (t->status == THREAD_READY)
+  {
+    /* Interrupts should already be off if we're manipulating
+       non-running threads (i.e., we've done a donation) */
+    ASSERT (intr_get_level () == INTR_OFF);
+    
+    list_remove(&t->elem);
+    list_insert_ordered(&ready_list, &t->elem, thread_priority_cmp, NULL);
+  }
+}
+
 /* Sets the current thread's priority to NEW_PRIORITY.
    If we now have a lower priority than any other thread,
    we yield. */
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+  thread_current ()->base_priority = new_priority;
+  thread_calculate_priority (thread_current ());
   thread_yield_to_max ();
 }
 
@@ -396,6 +439,64 @@ int
 thread_get_priority (void) 
 {
   return thread_current ()->priority;
+}
+
+/* Priority comparison for threads in the priority_donation list. Keeps
+   the list of priority donations ordered from greatest to least, making
+   it a priority queue of priority donations. */
+static bool
+thread_donation_cmp (const struct list_elem *a,
+                     const struct list_elem *b,
+                     void *aux UNUSED)
+{
+  return list_entry (a, struct thread, donation_elem)->priority >
+         list_entry (b, struct thread, donation_elem)->priority;
+}
+
+/* Recompute the effective priority of the given thread, then donate
+   priority as necessary if the thread is waiting on a lock. Will be
+   called recursively if the given thread is waiting on another. */
+void
+thread_donate_priority (struct thread *t)
+{
+  ASSERT (intr_get_level () == INTR_OFF);
+  ASSERT (is_thread (t));
+
+  /* Recalculate our priority, in case someone else bumped us. */
+  thread_calculate_priority (t);
+
+  if (t->waiting_on != NULL)
+  {
+    struct thread *waiter = t->waiting_on->holder;
+    
+    /* If this isn't the running thread and it's waiting on something,
+       then it must have already donated to another thread, so we need
+       to remove and re-insert that donation to preserve ordering. */
+    if (running_thread() != t)
+      thread_recall_donation (t);
+
+    /* Make the donation. */
+    list_insert_ordered (&waiter->priority_donations, &t->donation_elem,
+                         thread_donation_cmp, NULL);
+
+    /* Recursively call this function on the thread we're waiting on
+       so that it updates its own effective priority and updates its
+       own donations appropriately. */
+    thread_donate_priority (waiter);
+  }
+}
+
+/* Remove the given thread's priority donation.
+   NOTE : Assumes that
+     1. The given thread has already made a donation
+     2. The donor does not need to recompute effective priority */
+void
+thread_recall_donation (struct thread *t)
+{
+  ASSERT (intr_get_level () == INTR_OFF);
+  ASSERT (is_thread (t));
+  
+  list_remove (&t->donation_elem);
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -428,7 +529,7 @@ thread_get_recent_cpu (void)
   /* Not yet implemented. */
   return 0;
 }
-
+
 /* Idle thread.  Executes when no other thread is ready to run.
 
    The idle thread is initially put on the ready list by
@@ -477,7 +578,7 @@ kernel_thread (thread_func *function, void *aux)
   function (aux);       /* Execute the thread function. */
   thread_exit ();       /* If function() returns, kill the thread. */
 }
-
+
 /* Returns the running thread. */
 struct thread *
 running_thread (void) 
@@ -513,7 +614,9 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+  t->base_priority = priority;
   t->magic = THREAD_MAGIC;
+  list_init (&t->priority_donations);
   list_push_back (&all_list, &t->allelem);
 }
 
@@ -592,14 +695,14 @@ thread_schedule_tail (struct thread *prev)
 
 
 /* Comparison function for comparing the sleep values of two thread
-   structs. Returns true if a->sleepwakeup < b->sleepwakeup */
+   structs. Returns true if a->wakeup_time < b->wakeup_time */
 static bool 
 thread_sleep_cmp (const struct list_elem *a, 
 		  const struct list_elem *b, 
 		  void *aux UNUSED)
 {
-  return list_entry (a, struct thread, sleepelem)->sleepwakeup < 
-         list_entry (b, struct thread, sleepelem)->sleepwakeup;
+  return list_entry (a, struct thread, sleep_elem)->wakeup_time < 
+         list_entry (b, struct thread, sleep_elem)->wakeup_time;
 }
 
 /* Puts a thread to sleep until the given wake_time. The thread is
@@ -610,11 +713,11 @@ thread_sleep (int64_t wake_time)
 {
   enum intr_level old_level = intr_disable ();
   struct thread* cur = thread_current ();
-  cur->sleepwakeup = wake_time;
+  cur->wakeup_time = wake_time;
   ASSERT(cur != idle_thread);
 
   // Add thread to sleep_list
-  list_insert_ordered (&sleep_list, &cur->sleepelem, thread_sleep_cmp, NULL);
+  list_insert_ordered (&sleep_list, &cur->sleep_elem, thread_sleep_cmp, NULL);
 
   // Update status to blocked
   thread_block ();
@@ -627,16 +730,16 @@ static void
 schedule_update_sleep_threads (void)
 {
   int64_t time = timer_ticks ();
-  while (list_begin (&sleep_list) != (list_end (&sleep_list)))
+  while (list_begin (&sleep_list) != list_end (&sleep_list))
     {
       struct thread* front_thread = list_entry (list_begin (&sleep_list),
-                                                struct thread, sleepelem);
+                                                struct thread, sleep_elem);
 
-      /* Since sleep_list is kept in ascending order of sleepwakeup,
+      /* Since sleep_list is kept in ascending order of wakeup_time,
          we need only check that the front elem is not ready to wake.
          If that's the case, none of the elements are ready. */
-      if (front_thread->sleepwakeup > time)
-	break;
+      if (front_thread->wakeup_time > time)
+      	break;
 
       thread_unblock (front_thread);
       list_pop_front (&sleep_list);      
@@ -653,7 +756,7 @@ schedule_update_sleep_threads (void)
 static void
 schedule (void) 
 {
-  schedule_update_sleep_threads();
+  schedule_update_sleep_threads ();
 
   struct thread *cur = running_thread ();
   struct thread *next = next_thread_to_run ();
@@ -681,7 +784,7 @@ allocate_tid (void)
 
   return tid;
 }
-
+
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
