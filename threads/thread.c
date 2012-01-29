@@ -253,7 +253,7 @@ thread_priority_cmp (const struct list_elem *a,
 static int
 thread_max_priority (void)
 {
-  if (list_begin (&ready_list) != NULL)
+  if (list_begin (&ready_list) != list_end (&ready_list))
   {
     struct thread *t = list_entry (list_begin (&ready_list), struct thread, elem);
     return t->priority;
@@ -627,7 +627,7 @@ static void
 schedule_update_sleep_threads (void)
 {
   int64_t time = timer_ticks ();
-  while (list_begin (&sleep_list) != NULL)
+  while (list_begin (&sleep_list) != (list_end (&sleep_list)))
     {
       struct thread* front_thread = list_entry (list_begin (&sleep_list),
                                                 struct thread, sleepelem);
