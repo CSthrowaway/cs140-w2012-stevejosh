@@ -214,14 +214,19 @@ lock_acquire (struct lock *lock)
   old_level = intr_disable ();
   
   /* If the lock is currently held by someone, then we need to invoke
-     thread_donate_priority to donate our priority to that special someone. */  
-  if (lock->holder != NULL)
-  {
-    thread_current ()->waiting_on = lock;
-    thread_donate_priority (thread_current ());
-  }
+     thread_donate_priority to donate our priority to that special
+     someone. */  
+  if (!thread_mlfqs) // If using priority scheduler
+    {
+      if (lock->holder != NULL)
+	{
+	  thread_current ()->waiting_on = lock;
+	  thread_donate_priority (thread_current ());
+	}
+    }
   
   sema_down (&lock->semaphore);
+
   lock->holder = thread_current ();
   thread_current ()->waiting_on = NULL;
 
@@ -266,18 +271,21 @@ lock_release (struct lock *lock)
 
   /* Loop through all threads that were waiting on this lock and
      notify them to remove their priority donations. */
-  struct list_elem *e;
-  for (e = list_begin (&lock->semaphore.waiters);
-       e != list_end (&lock->semaphore.waiters);
-       e = list_next (e))
+  if (!thread_mlfqs) // If using priority scheduler
     {
-      struct thread *t = list_entry (e, struct thread, elem);
-      thread_recall_donation (t);
-    }
+      struct list_elem *e;
+      for (e = list_begin (&lock->semaphore.waiters);
+	   e != list_end (&lock->semaphore.waiters);
+	   e = list_next (e))
+	{
+	  struct thread *t = list_entry (e, struct thread, elem);
+	  thread_recall_donation (t);
+	}
   
-  /* Recompute my effective priority, since I may have just lost
-     some donations. */
-  thread_calculate_priority (thread_current ());
+      /* Recompute my effective priority, since I may have just lost
+	 some donations. */
+      thread_calculate_priority (thread_current ());
+    }
     
   /* NOTE : It's possible that we will be preempted by sema_up. */
   sema_up (&lock->semaphore); 
