@@ -132,8 +132,14 @@ static int
 thread_get_ready_threads (void)
 {
   ASSERT(thread_mlfqs);
-  size_t listSize = list_size (&ready_list);
-  return (int) listSize;
+  int ready_threads = list_size (&ready_list);
+
+  /* If we aren't the idle thread, then we should count as one
+     of the threads ready to be run. */
+  if (running_thread () != idle_thread)
+    ready_threads++;
+  
+  return ready_threads;
 }
 
 static void
@@ -152,10 +158,12 @@ static void
 thread_update_bsd_stats (void)
 {
   ASSERT(thread_mlfqs);
-  // update load average
-  int ready_threads = thread_get_ready_threads();
+
+  /* Update load average. */
+  int ready_threads = thread_get_ready_threads ();
   load_avg = fixed_point_multiply (fixed_point_create (59, 60), load_avg);
   load_avg += fixed_point_create (1, 60) * ready_threads;
+
   // update recent_cpu
   thread_foreach (thread_update_recent_cpu, NULL);
 }
