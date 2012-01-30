@@ -87,13 +87,12 @@ struct thread
     enum thread_status status;          /* Thread state. */
     char name[16];                      /* Name (for debugging purposes). */
     uint8_t *stack;                     /* Saved stack pointer. */
-    int recent_cpu;                    /* Estimation of clock ticks 
-					   recently used by this thread */
+    int recent_cpu;                     /* Estimation of clock ticks
+                                           recently used by this thread */
     int priority;                       /* Priority, including donations. */
     int base_priority;                  /* Base priority, before including
                                            priority donations. */
-    int niceness;                       /* Niceness for BSD scheduler
-					   priority formula */
+    int nice;                           /* Nice value for BSD scheduler */
     int64_t wakeup_time;                /* Time to wake up thread if asleep. */
 
     struct list priority_donations;     /* Sorted list (high-to-low) of all
@@ -149,7 +148,7 @@ typedef void thread_action_func (struct thread *t, void *aux);
 void thread_foreach (thread_action_func *, void *);
 
 void thread_calculate_priority (struct thread *t);
-void thread_calculate_priority_bsd (struct thread *t);
+void thread_calculate_priority_bsd (struct thread *t, void* aux UNUSED);
 void thread_donate_priority (struct thread *t);
 bool thread_priority_cmp (const struct list_elem *a, const struct list_elem *b,
 												  void *aux UNUSED);
