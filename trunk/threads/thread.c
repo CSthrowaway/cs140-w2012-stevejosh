@@ -131,9 +131,9 @@ thread_start (void)
 static int
 thread_get_ready_threads (void)
 {
-  ASSERT(thread_mlfqs);
-  int ready_threads = list_size (&ready_list);
+  ASSERT (thread_mlfqs);
 
+  int ready_threads = list_size (&ready_list);
   /* If we aren't the idle thread, then we should count as one
      of the threads ready to be run. */
   if (running_thread () != idle_thread)
@@ -145,11 +145,12 @@ thread_get_ready_threads (void)
 static void
 thread_update_recent_cpu (struct thread *t, void *aux UNUSED)
 {
-  ASSERT(thread_mlfqs);
+  ASSERT (thread_mlfqs);
+
   real c = fixed_point_divide (2 * load_avg, 
 			       2 * load_avg + fixed_point_create (1,1));
   c = fixed_point_multiply (t->recent_cpu, c);
-  c += fixed_point_create(t->niceness, 1);
+  c += fixed_point_create(t->nice, 1);
   t->recent_cpu = c;
 }
 
@@ -157,7 +158,7 @@ thread_update_recent_cpu (struct thread *t, void *aux UNUSED)
 static void
 thread_update_bsd_stats (void)
 {
-  ASSERT(thread_mlfqs);
+  ASSERT (thread_mlfqs);
 
   /* Update load average. */
   int ready_threads = thread_get_ready_threads ();
@@ -188,13 +189,12 @@ thread_tick (void)
   if (thread_mlfqs)
     {
       t->recent_cpu += fixed_point_create (1, 1);
-      // Update recent_cpu and load_avg on ticks landing on a new second
+
+      /* Update recent_cpu and load_avg on ticks landing on a new second */
       if ((timer_ticks () % TIMER_FREQ) == 0)
-	{
-	  thread_update_bsd_stats();
-	}
-    }
-  
+    	  thread_update_bsd_stats();
+  	}
+	
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
     intr_yield_on_return ();
@@ -309,11 +309,11 @@ static int
 thread_max_priority (void)
 {
   if (list_begin (&ready_list) != list_end (&ready_list))
-  {
-    struct thread *t = list_entry (list_begin (&ready_list),
-                                   struct thread, elem);
-    return t->priority;
-  }
+    {
+      struct thread *t = list_entry (list_begin (&ready_list),
+                                     struct thread, elem);
+      return t->priority;
+    }
   return -1;
 }
 
@@ -445,11 +445,11 @@ thread_get_donated_priority (struct thread *t)
   ASSERT (is_thread (t));
   
   if (list_begin (&t->priority_donations) != list_end (&t->priority_donations))
-  {
-    struct thread *top = list_entry (list_begin (&t->priority_donations),
-                                     struct thread, donation_elem);
-    return top->priority;
-  }
+    {
+      struct thread *top = list_entry (list_begin (&t->priority_donations),
+                                       struct thread, donation_elem);
+      return top->priority;
+    }
   return -1;
 }
 
@@ -459,14 +459,14 @@ static void
 thread_reinsert_ready_list (struct thread *t)
 {
   if (t->status == THREAD_READY)
-  {
-    /* Interrupts should already be off 
-       non-running threads */
-    ASSERT (intr_get_level () == INTR_OFF);
-    
-    list_remove(&t->elem);
-    list_insert_ordered(&ready_list, &t->elem, thread_priority_cmp, NULL);
-  }  
+    {
+      /* Interrupts should already be off 
+         non-running threads */
+      ASSERT (intr_get_level () == INTR_OFF);
+      
+      list_remove(&t->elem);
+      list_insert_ordered(&ready_list, &t->elem, thread_priority_cmp, NULL);
+    }  
 }
 
 /* Calculates and sets the current thread's priority, taking
@@ -486,22 +486,18 @@ thread_calculate_priority (struct thread *t)
   thread_reinsert_ready_list(t);
 }
 
-/* Calculates and sets the current thread's priority, taking
-   into consideration all bsd priority formula
-       priority = PRI_MAX - (recent_cpu / 4) - (nice * 2)
-*/
+/* Calculates and sets the current thread's priority, based on
+   the BSD scheduler priority formula */
 void
-thread_calculate_priority_bsd (struct thread *t)
+thread_calculate_priority_bsd (struct thread *t, void *aux UNUSED)
 {
   ASSERT (is_thread (t));
-  ASSERT(thread_mlfqs);
+  ASSERT (thread_mlfqs);
 
-  // calculate priority here
-  int new_priority = PRI_MAX - fixed_point_round_nearest
-    (t->recent_cpu / 4) - (t->niceness * 2);
-  t->priority = new_priority;
-  
-  thread_reinsert_ready_list(t);
+  /* Calculate the new priority of the thread */
+  t->priority = PRI_MAX
+                - fixed_point_round_nearest (t->recent_cpu / 4)
+                - (t->nice * 2);
 }
 
 /* Sets the current thread's priority to NEW_PRIORITY.
@@ -548,24 +544,24 @@ thread_donate_priority (struct thread *t)
   thread_calculate_priority (t);
 
   if (t->waiting_on != NULL)
-  {
-    struct thread *waiter = t->waiting_on->holder;
-    
-    /* If this isn't the running thread and it's waiting on something,
-       then it must have already donated to another thread, so we need
-       to remove and re-insert that donation to preserve ordering. */
-    if (running_thread() != t)
-      thread_recall_donation (t);
-
-    /* Make the donation. */
-    list_insert_ordered (&waiter->priority_donations, &t->donation_elem,
-                         thread_donation_cmp, NULL);
-
-    /* Recursively call this function on the thread we're waiting on
-       so that it updates its own effective priority and updates its
-       own donations appropriately. */
-    thread_donate_priority (waiter);
-  }
+    {
+      struct thread *waiter = t->waiting_on->holder;
+      
+      /* If this isn't the running thread and it's waiting on something,
+         then it must have already donated to another thread, so we need
+         to remove and re-insert that donation to preserve ordering. */
+      if (running_thread() != t)
+        thread_recall_donation (t);
+  
+      /* Make the donation. */
+      list_insert_ordered (&waiter->priority_donations, &t->donation_elem,
+                           thread_donation_cmp, NULL);
+  
+      /* Recursively call this function on the thread we're waiting on
+         so that it updates its own effective priority and updates its
+         own donations appropriately. */
+      thread_donate_priority (waiter);
+    }
 }
 
 /* Remove the given thread's priority donation.
@@ -586,8 +582,9 @@ void
 thread_set_nice (int nice) 
 {
   ASSERT(thread_mlfqs);
-  thread_current ()->niceness = nice;  
-  thread_calculate_priority_bsd (thread_current ());
+  thread_current ()->nice = nice;  
+  thread_calculate_priority_bsd (thread_current (), NULL);
+  thread_reinsert_ready_list (thread_current ());
   thread_yield_to_max ();
 }
 
@@ -596,7 +593,7 @@ int
 thread_get_nice (void) 
 {
   ASSERT(thread_mlfqs);
-  return thread_current ()->niceness;
+  return thread_current ()->nice;
 }
 
 /* Returns 100 times the system load average. */
@@ -694,7 +691,7 @@ init_thread (struct thread *t, const char *name, int priority)
   ASSERT (PRI_MIN <= priority && priority <= PRI_MAX);
   ASSERT (name != NULL);
 
-  memset (t, 0, sizeof *t); // Includes niceness and recent_cpu set of 0
+  memset (t, 0, sizeof *t); // Includes nice and recent_cpu set of 0
   t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
@@ -834,6 +831,17 @@ schedule_update_sleep_threads (void)
     }
 }
 
+/* Recompute the priority for every thread, based on the BSD scheduler
+   priority formula. */
+static void
+schedule_update_thread_priorities (void)
+{
+  ASSERT (thread_mlfqs);
+
+  thread_foreach (thread_calculate_priority_bsd, NULL);
+  list_sort (&ready_list, thread_priority_cmp, NULL);
+}
+
 /* Schedules a new process.  At entry, interrupts must be off and
    the running process's state must have been changed from
    running to some other state.  This function finds another
@@ -844,6 +852,8 @@ schedule_update_sleep_threads (void)
 static void
 schedule (void) 
 {
+  if (thread_mlfqs)
+    schedule_update_thread_priorities ();
   schedule_update_sleep_threads ();
 
   struct thread *cur = running_thread ();
