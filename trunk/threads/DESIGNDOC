@@ -29,26 +29,65 @@ Josh Parnell <parnell@stanford.edu>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+thread.h:
+struct thread // showing changes
+{
+int64_t wakeup_time; // Absolute time to wakeup thread if thread is asleep
+struct list_elem sleep_elem; // List element for sleep threads
+}
+
+thread.c:
+static struct list sleep_list; // List of processes currently in sleep
+
+
 ---- ALGORITHMS ----
 
 >> A2: Briefly describe what happens in a call to timer_sleep(),
 >> including the effects of the timer interrupt handler.
 
+thread_sleep is called with a parameter of the wake up time for the
+current thread. thread_sleep then disables interrupts, sets its wakeup
+time, inserts itself into the sleep_list and finally blocks.
+
+In schedule() the sleep_list is traversed and threads eligible to be woken
+up are removed from the sleep_list and unblocked. 
+
 >> A3: What steps are taken to minimize the amount of time spent in
 >> the timer interrupt handler?
+
+The only timer interrupt handle which has new work is when schedule
+is called (every 4th tick) upon which sleep_list is iterated to
+potentially wake up sleeping threads. Since the sleep_list is
+ordered the traversal can be exited early as soon as a thread not eligible
+to be removed is iterated on.
 
 ---- SYNCHRONIZATION ----
 
 >> A4: How are race conditions avoided when multiple threads call
 >> timer_sleep() simultaneously?
 
+We disable interrupts to calculate the absolute end time of the thread to
+be put to sleep and additionally disable interrupts to insert the newly
+updated thread into the sleep_list.
+
 >> A5: How are race conditions avoided when a timer interrupt occurs
 >> during a call to timer_sleep()?
+
+Insertion of the thread into sleep_list is an ordered operation which
+could potentially have race conditions, but interrupts are disabled when
+inserting to avoid them.
 
 ---- RATIONALE ----
 
 >> A6: Why did you choose this design?  In what ways is it superior to
 >> another design you considered?
+
+We chose to create a new sleep_list to ensure rapid wakeup checks on timer
+interrupts and to make sure the system stays speedy. Without using the
+extra ordered list we would have had to traverse more threads upon
+scheduling to determine if any sleeping threads were newly eligible to be
+unblocked. Additionally, using a list followed the existing design of
+threads existing in multiple lists such as ready_list and all_list.
 
 			 PRIORITY SCHEDULING
 			 ===================
