@@ -339,6 +339,16 @@ priority donation in a way that is clean, fast, simple, and powerful.
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+--- thread.c ---
+
+struct thread
+  int recent_cpu;                  /* Estimation of clock ticks recently
+      				      used by this thread */
+  int nice;			   /* Niceness value for BSD scheduling */
+
+static real load_avg;		   /* load average for BSD scheduling */
+
+
 ---- ALGORITHMS ----
 
 >> C2: Suppose threads A, B, and C have nice values 0, 1, and 2.  Each
@@ -349,23 +359,43 @@ priority donation in a way that is clean, fast, simple, and powerful.
 timer  recent_cpu    priority   thread
 ticks   A   B   C   A   B   C   to run
 -----  --  --  --  --  --  --   ------
- 0      0   0   0
- 4
- 8
-12
-16
-20
-24
-28
-32
-36
+ 0      0   0   0  63  61  59   A
+ 4      4   0   0  62  61  59   A
+ 8      8   0   0  61  61  59   B
+12      8   4   0  61  60  59   A
+16     12   4   0  60  60  59   B
+20     12   8   0  60  59  59   A
+24     16   8   0  59  59  59   C
+28     16   8   4  59  59  58   B
+32     16  12   4  59  58  58   A
+36     20  12   4  58  58  58   C
 
 >> C3: Did any ambiguities in the scheduler specification make values
 >> in the table uncertain?  If so, what rule did you use to resolve
 >> them?  Does this match the behavior of your scheduler?
 
+Ambiguities in the scheduler specifications made some timer ticks have
+multiple threads share the same highest priority making the thread to run
+technically ambiguous. To resolve this the thread with the highest
+priority that has not run in the most number of ticks is selected as the next
+thread to run. This behavior matches with the behavior of our scheduler
+because our scheduler inserts the current thread back into the ready list
+in an ordered way such that it is moved to the behind any elements with
+the same priorities. This allows a fair round robin to emerge so no thread
+will dominate the system even though multiple threads have the same priority.
+
 >> C4: How is the way you divided the cost of scheduling between code
 >> inside and outside interrupt context likely to affect performance?
+
+The new additional steps of updating recent_cpu and load_average values
+for BSD scheduling are done during a thread_tick interrupt and thus
+require interrupts to be disabled for correct calculations. We only update
+the priorities and recent_cpu when schedule is called which is
+approximately every four ticks instead of every tick thus avoiding some
+unnecessary calculations. Additionally we keep our list of ready threads
+properly sorted including round robin ordering so schedule can quickly
+select the next thread to run by popping the front of the ready list and
+quickly get back to turning off interrupts.
 
 ---- RATIONALE ----
 
@@ -374,9 +404,32 @@ ticks   A   B   C   A   B   C   to run
 >> time to work on this part of the project, how might you choose to
 >> refine or improve your design?
 
+We think we've come up with a very clean design which leverages lists and
+minimum additional data elements and structures. We explicitly avoided
+potentially sparse arrays and indices for features such as priority
+donation and thus do not limit ourselves to a preset depth (within memory
+bounds) of donation. Additionally, our lists allow us to leverage the
+existing list structure which is already used in Pintos and to simplify
+many operations such as ordered insertion, mapping functions across many
+elements, sorting, and removal. We are happy with our design, but if we
+had more time to work on this project we would work on optimization
+efforts to minimize time when interrupts are disabled such as when
+updating recent_cpu.
+
 >> C6: The assignment explains arithmetic for fixed-point math in
 >> detail, but it leaves it open to you to implement it.  Why did you
 >> decide to implement it the way you did?  If you created an
 >> abstraction layer for fixed-point math, that is, an abstract data
 >> type and/or a set of functions or macros to manipulate fixed-point
 >> numbers, why did you do so?  If not, why not?
+
+We implemented fixed-point with a typedef int real and a series of
+functions to manipulate or create fixed-point numbers (fixed_point_create,
+fixed_point_multiply, etc.). We did this to keep it more clear for users
+or readers when they were using fixed_point values or operations because
+it requires the use of explicitly writing out the functions and type. This
+seems safer and allows for potential future optimizations by replacing
+those functions with more optimized routines. Additionally it also creates
+an easy avenue to experiment with different fixed point splits such as
+using 15 vs 14 bits for the fractional bits and observing if there are any
+benefits in performance.
