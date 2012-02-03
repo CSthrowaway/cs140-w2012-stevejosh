@@ -308,13 +308,26 @@ thread_priority_cmp (const struct list_elem *a,
 static int
 thread_max_priority (void)
 {
+  /* We need to disable interrupts here so that the race (detailed
+     below) doesn't occur. */
+  enum intr_level old_level;
+  old_level = intr_disable ();
+  int return_value = -1;
+
   if (list_begin (&ready_list) != list_end (&ready_list))
     {
+      /* Race condition exists here if interrupts are not disabled:
+         if there is only one other thread ready and that thread
+         interleaves here, then blocks, then the ready list will
+         be empty when we run again, even though we think it's got
+         something in it, and will end up reading bogus memory below */
       struct thread *t = list_entry (list_begin (&ready_list),
                                      struct thread, elem);
-      return t->priority;
+      return_value = t->priority;
     }
-  return -1;
+    
+  intr_set_level (old_level);
+  return return_value;
 }
 
 /* Check to see if we're one of the highest-priority threads.
@@ -460,13 +473,13 @@ thread_reinsert_ready_list (struct thread *t)
 {
   if (t->status == THREAD_READY)
     {
-      /* Interrupts should already be off 
+      /* Interrupts should already be off for
          non-running threads */
       ASSERT (intr_get_level () == INTR_OFF);
       
       list_remove(&t->elem);
       list_insert_ordered(&ready_list, &t->elem, thread_priority_cmp, NULL);
-    }  
+    }
 }
 
 /* Calculates and sets the current thread's priority, taking
@@ -507,6 +520,7 @@ void
 thread_set_priority (int new_priority) 
 {
   ASSERT (!thread_mlfqs); // Only relevant for priority scheduling
+
   thread_current ()->base_priority = new_priority;
   thread_calculate_priority (thread_current ());
   thread_yield_to_max ();
