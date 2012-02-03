@@ -43,48 +43,60 @@ static struct list sleep_list; /* List of processes currently sleeping */
 >> including the effects of the timer interrupt handler.
 
 thread_sleep is called with a parameter of the wake up time for the
-current thread. thread_sleep then disables interrupts, sets its wakeup
-time, inserts itself into the sleep_list and finally blocks.
+current thread. thread_sleep then disables interrupts, sets the calling
+thread's wakeup time, inserts the thread into the sleep_list and,
+finally, blocks.
 
-In schedule() the sleep_list is traversed and threads eligible to be woken
-up are removed from the sleep_list and unblocked. 
+In schedule(), the sleep_list is traversed and threads eligible to be woken
+up are removed from the sleep_list and unblocked. Note that the traversal
+is broken upon finding a thread that is not ready to be awoken, since
+sleep_list is sorted.
 
 >> A3: What steps are taken to minimize the amount of time spent in
 >> the timer interrupt handler?
 
 The only timer interrupt handle which has new work is when schedule
-is called (every 4th tick) upon which sleep_list is iterated to
-potentially wake up sleeping threads. Since the sleep_list is
-ordered the traversal can be exited early as soon as a thread not eligible
-to be removed is iterated on.
+is called, upon which sleep_list is iterated to potentially wake up
+sleeping threads. Since sleep_list is ordered, the traversal can exit
+early as soon as it encounters a thread that isn't ready to be awoken.
+Thus, we perform only the work that is absolutely necessary in the
+timer interrupt handler.
 
 ---- SYNCHRONIZATION ----
 
 >> A4: How are race conditions avoided when multiple threads call
 >> timer_sleep() simultaneously?
 
-We disable interrupts to calculate the absolute end time of the thread to
-be put to sleep and additionally disable interrupts to insert the newly
-updated thread into the sleep_list.
+thread_sleep disables interrupts while manipulating sleep_list, since
+sleep_list is a kernel structure. The other parts of timer_sleep are
+not racy (getting number of ticks is already protected by disabled
+interrupts).
 
 >> A5: How are race conditions avoided when a timer interrupt occurs
 >> during a call to timer_sleep()?
 
-Insertion of the thread into sleep_list is an ordered operation which
-could potentially have race conditions, but interrupts are disabled when
-inserting to avoid them.
+Again, interrupts are disabled while thread_sleep is manipulating the
+kernel's sleep_list. This is the only place in which timer interrupts
+could cause a problem.
 
 ---- RATIONALE ----
 
 >> A6: Why did you choose this design?  In what ways is it superior to
 >> another design you considered?
 
-We chose to create a new sleep_list to ensure rapid wakeup checks on timer
-interrupts and to make sure the system stays speedy. Without using the
-extra ordered list we would have had to traverse more threads upon
-scheduling to determine if any sleeping threads were newly eligible to be
-unblocked. Additionally, using a list followed the existing design of
-threads existing in multiple lists such as ready_list and all_list.
+First, creating a new list allowed us to keep everything clean as well
+as efficient. Rather than treating sleeping threads as generic blocked
+threads, we put them in a separate list so that we can traverse only
+the threads that are asleep. Furthermore, since we keep the list sorted,
+minimal work is done inside schedule(), making everything quite fast.
+
+One could imagine implementing the functionality without using an
+additional list. This, however, would cause the kernel to have to examine
+more threads than necessary when checking for wakeups. Additionally, it's
+not quite as intuitive how one would approach this if the list were to be
+kept sorted (since threads that aren't sleeping would also be in the
+all_threads list). Therefore, we chose to go with the simple and efficient
+design of adding an extra list.
 
 			 PRIORITY SCHEDULING
 			 ===================
@@ -119,14 +131,14 @@ We chose to embed a sorted linked-list of priority donations into each thread.
 This means that, if thread A needs to donate a priority to thread B, A
 will add its donation_elem to the priority_donations list of B. That way,
 B keeps track of ALL donations given to it at any point in time. Additionally,
-when a thread donates, it calls thread_donate_priority () on the receiving
+when a thread donates, it calls thread_donate_priority() on the receiving
 thread (that is, thread A in our example would call
-thread_donate_priority (B)). This call allows the thread that received the
+thread_donate_priority(B)). This call allows the thread that received the
 donation to update its effective priority, as well as to update the priority
 of any outstanding donation that it has made to another thread.
 
 When a thread releases a lock, it iterates over the list of threads that were
-waiting on the lock, and invokes thread_recall_donation () on each of the
+waiting on the lock, and invokes thread_recall_donation() on each of the
 threads, instructing them to each remove their donation_elem. This allows a
 thread to give up any priority that it received as a result of holding the lock
 that it just released, while keeping intact any donations that it has received
@@ -154,7 +166,7 @@ this for the four threads:
     (empty list)
   
 Now, we point out that, when thread A donated priority to thread B, it called
-thread_donate_priority (B), which would have caused B to recompute its
+thread_donate_priority(B), which would have caused B to recompute its
 effective priority (taking into consideration the donation from A), *as
 well as* to update any existing donation that B had made. In this way, the
 priority from A would be transferred all the way to C *through* thread B's
@@ -165,9 +177,9 @@ correctly.
 Finally, we remark that, since we always keep a complete list of donations,
 thread C will still have the correct priority if, for example, it releases
 the lock upon which B was waiting, but not the lock upon which D was waiting.
-This would cause thread C to invoke thread_recall_donation (B), so that
+This would cause thread C to invoke thread_recall_donation(B), so that
 B.donation_elem would be removed from C.priority_donations, but D.donation_elem
-will remain (which is the correct behavior, since C still holds a lock on
+would remain (which is the correct behavior, since C still holds a lock on
 which D is waiting). Thus, the effective priority of C will be recomputed,
 taking into consideration only the base priority of C and the donation_elem
 of D.
@@ -182,31 +194,41 @@ function to return the highest-priority thread in the list of waiting
 threads. Note that we used list_min rather than list_max because our
 comparison function uses > rather than < (this choice was made so that
 the threads in the ready list are ordered from highest-priority to
-lowest-priority).
+lowest-priority). Our rational for using list_min rather than keeping a
+sorted list was that priorities may change while the thread is waiting
+on a semaphore/lock (by priority donation), so any order we try to enforce
+could be voided by donations unless we spend extra effort to re-order
+the list when donations occur. This seemed more complex than necessary,
+so we chose to simply pull out the maximal element when we need it,
+making no assumptions about where it lives in the list.
 
 For condition variables, we added a new field to struct semaphore_elem to
 store the priority of the thread to which the semaphore_elem belongs. Then,
 when a thread calls cond_wait, we changed the list insertion to use
 list_insert_ordered, such that the list will remain sorted from high-priority
 threads to low-priority threads. Thus, when we want to wake up the highest-
-priority thread, we need only grab the first element of the list.
+priority thread, we need only grab the first element of the list. Note that
+this works, unlike in the situation described above, because condition
+variables do not invoke priority donation.
 
 >> B4: Describe the sequence of events when a call to lock_acquire()
 >> causes a priority donation.  How is nested donation handled?
 
 Suppose thread A is trying to acquire lock L1, which is held by thread B,
-which is trying to acquire lock L2, which is held by thread C. this is a
+which is trying to acquire lock L2, which is held by thread C. This is a
 classic example of nested donation. The call stack during the call to
 lock_acquire would look something like this:
 
   --- Thread A ---
   lock_acquire (L1)
     > thread_donate_priority (A)
-      --- Thread B ---
-      > thread_update_priority (B)
+      > thread_update_priority (A)
       > thread_donate_priority (B)
-        --- Thread C ---
-        > thread_update_priority (C)
+        --- Thread B ---
+        > thread_update_priority (B)
+        > thread_donate_priority (C)
+          --- Thread C ---
+          > thread_update_priority (C)
       
 When A tries to acquire L1, A recognizes that L1 is held by B. A sets
 its internal waiting_on pointer to L1, and then calls thread_donate_priority
@@ -221,7 +243,7 @@ donate_priority calls itself recursively on B.
 The same sequence of events then happens with B: B updates its effective
 priority (taking into consideration the new donation_elem that it received
 from A), recognizes that it is waiting on L2, which is held by C, then updates
-the donation_elem that it initially gave to C. It does so be calling
+the donation_elem that it initially gave to C. It does so by calling
 thread_recall_donation (B). Note that A does not do this because A is the
 running thread, and, as such, knows that it had not already given a donation.
 B then re-inserts its donation_elem into C's donation list. This step of
@@ -229,12 +251,12 @@ removing and re-inserting is crucial to preserve the sorted property of
 donation lists. B then calls thread_donate_priority recursively on C.
 
 Finally, C updates its effective priority, then, recognizing that it is not
-waiting on a lock, terminates the call and unwinds the stack.
+waiting on a lock, returns and unwinds the stack.
 
 >> B5: Describe the sequence of events when lock_release() is called
 >> on a lock that a higher-priority thread is waiting for.
 
-As described above, a thread invoking lock_release will iterate over the
+As described in B2), a thread invoking lock_release will iterate over the
 the lock's waiter list and, for each thread in the list, invoke
 thread_recall_donation on the thread. This function will, in turn, cause
 the given thread to remove its donation_elem from the releasing thread's
@@ -255,30 +277,30 @@ we were to access the list without synchronization, it is possible that
 interleaving could occur in a detrimental way. We have detailed this
 possible race in the function thread_max_priority below:
 
-static int
-thread_max_priority (void)
-{
-  /* We need to disable interrupts here so that the race (detailed
-     below) doesn't occur. */
-  enum intr_level old_level;
-  old_level = intr_disable ();
-  int return_value = -1;
+  static int
+  thread_max_priority (void)
+  {
+    /* We need to disable interrupts here so that the race (detailed
+       below) doesn't occur. */
+    enum intr_level old_level;
+    old_level = intr_disable ();
+    int return_value = -1;
 
-  if (list_begin (&ready_list) != list_end (&ready_list))
-    {
-      /* Race condition exists here if interrupts are not disabled:
-         if there is only one other thread ready and that thread
-         interleaves here, then blocks, then the ready list will
-         be empty when we run again, even though we think it's got
-         something in it, and will end up reading bogus memory below */
-      struct thread *t = list_entry (list_begin (&ready_list),
-                                     struct thread, elem);
-      return_value = t->priority;
-    }
-    
-  intr_set_level (old_level);
-  return return_value;
-}
+    if (list_begin (&ready_list) != list_end (&ready_list))
+      {
+        /* Race condition exists here if interrupts are not disabled:
+           if there is only one other thread ready and that thread
+           interleaves here, then blocks, then the ready list will
+           be empty when we run again, even though we think it's got
+           something in it, and will end up reading bogus memory below */
+        struct thread *t = list_entry (list_begin (&ready_list),
+                                       struct thread, elem);
+        return_value = t->priority;
+      }
+      
+    intr_set_level (old_level);
+    return return_value;
+  }
 
 Our solution to avoiding the race was, as stated in the comments, to disable
 interrupts during the call to thread_max_priority, which determines the
@@ -323,12 +345,13 @@ an alternative. That is, we could have defined struct thread* donations[8],
 for example, and used the array to store donations on a per-thread basis.
 Such a scheme would be inferior to our design in every way. First, it would
 require 32 bytes per thread minimum (and probably 36, since it is still
-convenient to have a lock* to the waiting lock). Second, it limits the
-total number of donations allowable for any single thread. Finally, although
-the running time could be made comparable to that of our design, it would
-require that we write procedures for manipulating an array-based list.
-Our design leverages the power of the existing list code to implement
-priority donation in a way that is clean, fast, simple, and powerful.
+convenient to have a lock* to the waiting lock), and that's just if we wanted
+to support a maximum of 8 donations! Second, it limits the total number of
+donations allowable for any single thread. Finally, although the running time
+could be made comparable to that of our design, it would require that we
+write procedures for manipulating a sorted, array-based list. Our design
+leverages the power of the existing list code to implement priority donation
+in a way that is clean, fast, simple, and powerful.
 
 			  ADVANCED SCHEDULER
 			  ==================
@@ -339,15 +362,14 @@ priority donation in a way that is clean, fast, simple, and powerful.
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
---- thread.c ---
-
+--- thread.h ---
 struct thread
-  int recent_cpu;                  /* Estimation of clock ticks recently
-      				      used by this thread */
-  int nice;			   /* Niceness value for BSD scheduling */
+  int recent_cpu;           /* Estimation of clock ticks recently
+                               used by this thread */
+  int nice;			            /* Niceness value for BSD scheduling */
 
-static real load_avg;		   /* load average for BSD scheduling */
-
+--- thread.c ---
+static real load_avg;		    /* load average for BSD scheduling */
 
 ---- ALGORITHMS ----
 
@@ -375,27 +397,37 @@ ticks   A   B   C   A   B   C   to run
 >> them?  Does this match the behavior of your scheduler?
 
 Ambiguities in the scheduler specifications made some timer ticks have
-multiple threads share the same highest priority making the thread to run
-technically ambiguous. To resolve this the thread with the highest
+multiple threads share the same highest priority, making the thread to run
+technically ambiguous. To resolve this, the thread with the highest
 priority that has not run in the most number of ticks is selected as the next
-thread to run. This behavior matches with the behavior of our scheduler
-because our scheduler inserts the current thread back into the ready list
-in an ordered way such that it is moved to the behind any elements with
-the same priorities. This allows a fair round robin to emerge so no thread
-will dominate the system even though multiple threads have the same priority.
+thread to run. This behavior matches with the behavior of our scheduler,
+since our scheduler inserts the current thread back into the ready list
+in an ordered way such that it is moved to the back of any elements with
+the same priority. This produces a fair, round-robin policy so that no thread
+will dominate the system even when multiple threads maintain the same
+priority.
 
 >> C4: How is the way you divided the cost of scheduling between code
 >> inside and outside interrupt context likely to affect performance?
 
 The new additional steps of updating recent_cpu and load_average values
-for BSD scheduling are done during a thread_tick interrupt and thus
-require interrupts to be disabled for correct calculations. We only update
-the priorities and recent_cpu when schedule is called which is
-approximately every four ticks instead of every tick thus avoiding some
-unnecessary calculations. Additionally we keep our list of ready threads
-properly sorted including round robin ordering so schedule can quickly
-select the next thread to run by popping the front of the ready list and
-quickly get back to turning off interrupts.
+for BSD scheduling are done during a thread_tick interrupt. Of course,
+we only touch all of the threads every second, so very little overhead
+has been added to the timer interrupt overall. The most expensive part
+of the whole operation is recomputing the thread priorities in order to
+select a new one. However, we only do so during the call to schedule (as
+opposed to every tick), and we do so by using the built-in list sort
+routine. The sort is fast, and, moreover, may take advantage of the fact
+that the list is already partially-ordered.
+
+Overall, we are doing no more work than necessary, so we expect performance
+to be good. We note that, initially, we implemented a scheme whereby
+threads were re-inserted into the list immediately upon incurring a priority
+update, preserving the ordering of the list on an element-by-element basis.
+This method, however, was wasteful and caused some of our tests to fail
+due to missed ticks. This is when we streamlined the process by deferring the
+sorting of the ready list until after all priorities had been updated, which
+turned out to be far more efficient!
 
 ---- RATIONALE ----
 
@@ -404,17 +436,21 @@ quickly get back to turning off interrupts.
 >> time to work on this part of the project, how might you choose to
 >> refine or improve your design?
 
-We think we've come up with a very clean design which leverages lists and
+We think that we've come up with a very clean design which leverages lists and
 minimum additional data elements and structures. We explicitly avoided
 potentially sparse arrays and indices for features such as priority
 donation and thus do not limit ourselves to a preset depth (within memory
 bounds) of donation. Additionally, our lists allow us to leverage the
 existing list structure which is already used in Pintos and to simplify
 many operations such as ordered insertion, mapping functions across many
-elements, sorting, and removal. We are happy with our design, but if we
-had more time to work on this project we would work on optimization
-efforts to minimize time when interrupts are disabled such as when
-updating recent_cpu.
+elements, sorting, and removal.
+
+Although we are quite pleased with our design, if we had more time, we would
+like to figure out how to profile Pintos. Profiling would be the only real
+way to gain performance (or at least we think...hopefully we've grabbed the
+low-hanging fruit?). We'd enjoy figuring out if it would be possible to cut
+down on time spent in interrupt handlers (in fact, we'd be interested in just
+knowing what that number looks like right now).
 
 >> C6: The assignment explains arithmetic for fixed-point math in
 >> detail, but it leaves it open to you to implement it.  Why did you
@@ -423,13 +459,19 @@ updating recent_cpu.
 >> type and/or a set of functions or macros to manipulate fixed-point
 >> numbers, why did you do so?  If not, why not?
 
-We implemented fixed-point with a typedef int real and a series of
-functions to manipulate or create fixed-point numbers (fixed_point_create,
-fixed_point_multiply, etc.). We did this to keep it more clear for users
-or readers when they were using fixed_point values or operations because
-it requires the use of explicitly writing out the functions and type. This
-seems safer and allows for potential future optimizations by replacing
-those functions with more optimized routines. Additionally it also creates
-an easy avenue to experiment with different fixed point splits such as
-using 15 vs 14 bits for the fractional bits and observing if there are any
-benefits in performance.
+We implemented fixed-point with a typedef and a series of manipulate
+fixed-point numbers (fixed_point_create, fixed_point_multiply, etc.).
+We did this to make it clear to users or readers when they were using
+fixed_point values or operations, since it requires explicitly writing out
+the functions and type. This seems safer than re-writing the formulas each
+time. Additionally, it also creates an easy avenue to experiment with
+different fixed point splits such as using 15 vs 14 bits for the fractional
+bits and observing if there are any benefits in performance.
+
+We chose to abstract the functions because it seems very, very easy to
+make a silly mistake in the math, which might end up causing miscalculations
+in priorities, which would make for a very hard-to-track bug (if, for example,
+a >> was interchanged with a <<). As such, we decided to write the functions,
+then perform a series of unit tests on them using printf in Pintos to verify
+that they were working as we expected them to. This spared us the pain of
+debugging once the functions were put to real use.
