@@ -95,8 +95,7 @@ threads existing in multiple lists such as ready_list and all_list.
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
---- thread.c ---
-
+--- thread.h ---
 struct thread
   int base_priority;                  /* Base priority, before considering
                                          priority donations. */
@@ -109,7 +108,6 @@ struct thread
                                          priority to other threads. */
 
 --- synch.c ---
-
 struct semaphore_elem
   int priority;                       /* Priority of this waiting thread */
 
@@ -236,7 +234,13 @@ waiting on a lock, terminates the call and unwinds the stack.
 >> B5: Describe the sequence of events when lock_release() is called
 >> on a lock that a higher-priority thread is waiting for.
 
-As described above,
+As described above, a thread invoking lock_release will iterate over the
+the lock's waiter list and, for each thread in the list, invoke
+thread_recall_donation on the thread. This function will, in turn, cause
+the given thread to remove its donation_elem from the releasing thread's
+list of priority donations. Performing this on each element of the wait list
+causes the releasing thread to lose all priority donations associate with
+the lock that it is releasing (as it should).
 
 ---- SYNCHRONIZATION ----
 
@@ -244,10 +248,87 @@ As described above,
 >> how your implementation avoids it.  Can you use a lock to avoid
 >> this race?
 
+thread_set_priority must determine whether or not to yield, which requires
+determining the current highest-priority thread in the ready list. Doing
+so requires accessing the ready list, which is a shared structure. If
+we were to access the list without synchronization, it is possible that
+interleaving could occur in a detrimental way. We have detailed this
+possible race in the function thread_max_priority below:
+
+static int
+thread_max_priority (void)
+{
+  /* We need to disable interrupts here so that the race (detailed
+     below) doesn't occur. */
+  enum intr_level old_level;
+  old_level = intr_disable ();
+  int return_value = -1;
+
+  if (list_begin (&ready_list) != list_end (&ready_list))
+    {
+      /* Race condition exists here if interrupts are not disabled:
+         if there is only one other thread ready and that thread
+         interleaves here, then blocks, then the ready list will
+         be empty when we run again, even though we think it's got
+         something in it, and will end up reading bogus memory below */
+      struct thread *t = list_entry (list_begin (&ready_list),
+                                     struct thread, elem);
+      return_value = t->priority;
+    }
+    
+  intr_set_level (old_level);
+  return return_value;
+}
+
+Our solution to avoiding the race was, as stated in the comments, to disable
+interrupts during the call to thread_max_priority, which determines the
+maxmimum thread priority. It would *not* have been a good idea to synchronize
+this access using locks - that would require that all access to the ready
+list be protected by a lock rather than disabled interrupts. We prefer to
+follow the convention already established and use disabled interrupts for
+synchronizing access to kernel structures, rather than uprooting much of the
+existing code to make the lock synchronization work.
+
 ---- RATIONALE ----
 
 >> B7: Why did you choose this design?  In what ways is it superior to
 >> another design you considered?
+
+Our design is both simple and powerful. The use of a donation list allows
+all threads to keep track of, in theory, an infinite number of donations
+from other threads. Furthermore, our method can (again, in theory) handle
+an infinite-depth donation chain. Of course, we are limited by stack space,
+since thread_donate_priority is called recursively.  The power in our design
+comes from the simple observation that any given thread may only ever be
+waiting on one thread at a time.  This observation allowed us to justify
+embedding a donation_elem in the thread structure, which allows the list
+donation scheme to work.
+
+We consider the memory requirements for our design, assuming 32-bit arch:
+  1 x struct list         = 16 bytes
+  1 x struct list_elem    = 8 bytes
+  1 x struct lock*        = 4 bytes
+                          = 28 bytes total
+
+Thus, we use 28 bytes per thread for our priority donation scheme. In terms
+of running time, we require O(1) time for determining the effective priority
+of any given thread (since the list of donations is ordered), O(n) time for
+donating a priority, where n is the number of existing donations for the
+receiving thread, and O(1) time for recalling a donation.  In all, the time
+requirements of this method are *very* cheap! Note that the most common
+operation, determining a thread's effective priority, is very fast.
+
+Now, we might have considered storing a fixed-size array of donations as
+an alternative. That is, we could have defined struct thread* donations[8],
+for example, and used the array to store donations on a per-thread basis.
+Such a scheme would be inferior to our design in every way. First, it would
+require 32 bytes per thread minimum (and probably 36, since it is still
+convenient to have a lock* to the waiting lock). Second, it limits the
+total number of donations allowable for any single thread. Finally, although
+the running time could be made comparable to that of our design, it would
+require that we write procedures for manipulating an array-based list.
+Our design leverages the power of the existing list code to implement
+priority donation in a way that is clean, fast, simple, and powerful.
 
 			  ADVANCED SCHEDULER
 			  ==================
