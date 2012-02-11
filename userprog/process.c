@@ -45,6 +45,107 @@ process_execute (const char *file_name)
   return tid;
 }
 
+/* Parses the argument string for a given command-line (given in
+   arg_string), and sets up the stack such that argc and argv are
+   ready to be accessed by the user program. */   
+static void
+start_process_parse_args (char **esp_ptr, char *arg_string)
+{
+  /* NOTE: this function recomputes file_name_length and strlen(arg_string) 
+     even though the calling function will have already done so,
+     but the readability gain is worth the *tiny* performance loss. */
+
+  int args = 0;
+  int whitespace_size = 0;
+  int file_name_length = strcspn(arg_string, " ");
+  char *p_arg_string = &arg_string[file_name_length];
+
+  /* Do an initial pass over the argument string to determine exactly
+     how many arguments there are as well as how many bytes of whitespace
+     there are. This will save us from having to use any temporary memory
+     while we are setting up the stack with argv's contents. */
+  char c;
+  bool in_whitespace = true;
+  while ((c = *p_arg_string))
+    {
+      if (c != ' ' && in_whitespace)
+        {
+          in_whitespace = false;
+          args++;
+        }
+      else if (c == ' ')
+        {
+          if (!in_whitespace)
+            in_whitespace = true;
+          whitespace_size++;
+        }
+      p_arg_string++;
+    }
+
+  // TODO!!!!
+  // WORD ALIGNMENT!!!
+
+  /* Compute the amount of memory that will be required to store *all* of
+     the contents of argv, including null-terminators. */
+  int argv_memory = strlen(arg_string) - file_name_length
+    - whitespace_size + args;
+
+  /* Subtract argv_memory from esp so that we can start setting up argv's
+     data. */
+  *esp_ptr -= argv_memory;
+  
+  /* argv_array points to the beggining of the argv array. It is an array
+     of char*s. Note that the + 1 is required because argv must be padded
+     with a null pointer at the end. */
+  char **argv_array = (char**)*esp_ptr - (args + 1);
+  
+  char *string_data = *esp_ptr;
+  char *token, *save_ptr;
+  int argv_index = 0;
+  
+  for (token = strtok_r (&arg_string[file_name_length], " ", &save_ptr);
+        token != NULL;
+        token = strtok_r (NULL, " ", &save_ptr))
+    {
+       strlcpy (string_data, token, argv_memory);
+       argv_array[argv_index] = string_data;
+       string_data += strlen (token) + 1;
+       argv_index++;
+    }
+
+  /* Pad argv with a null pointer, as required by the C standard. */
+  argv_array[args] = NULL;
+
+  /* Decrement the stack pointer to point to the top of the argv array. */
+  *esp_ptr -= sizeof(char*) * (args + 1);
+  
+  /* Now, decrement the stack pointer to point to the pointer to argv,
+     and write the pointer such that it contains the address of the
+     first element of argv (which is argv_array). */
+  *esp_ptr -= sizeof(char**);
+  *(char***)(*esp_ptr) = argv_array;
+
+  /* Decrement the stack pointer by the size of an integer and write
+     the number of arguments. */
+  *esp_ptr -= sizeof(int);
+  *(int*)(*esp_ptr) = args;
+  
+  /* Finally, decrement the stack pointer by the size of an address and
+     write a null pointer; this is the return address. */
+  *esp_ptr -= sizeof(void*);
+  *(void**)(*esp_ptr) = NULL;
+
+  /*hex_dump(0, *esp_ptr, argv_memory + sizeof(char*)*(args + 1) + 12, true);
+  
+  int argc = *(int*)(*esp_ptr + 4);
+  char** argv = *(char***)(*esp_ptr + 8);
+  
+  printf("%d args:\n", argc);
+  int i = 0;
+  for (i = 0; i < args; ++i)
+    printf("\t[%d] %s\n", i, argv[i]);*/
+}
+
 /* A thread function that loads a user process and starts it
    running. */
 static void
@@ -54,12 +155,26 @@ start_process (void *file_name_)
   struct intr_frame if_;
   bool success;
 
+  /* Determine the length of the entire argument string
+     as well as the length of the actual executable path. */
+  int arg_string_length = strlen (file_name);
+  int file_name_length = strcspn (file_name, " ");
+  file_name[file_name_length] = '\0';
+
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
+
+  if (arg_string_length > file_name_length)
+    file_name[file_name_length] = ' ';
+ 
+  /* Parse the arguments and set up the stack such that argc and
+     argv are correctly-placed and reflective of the contents
+     of the arguments in file_name. */
+  start_process_parse_args((char**)&if_.esp, file_name);
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
