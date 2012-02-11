@@ -705,13 +705,14 @@ init_thread (struct thread *t, const char *name, int priority)
   ASSERT (PRI_MIN <= priority && priority <= PRI_MAX);
   ASSERT (name != NULL);
 
-  memset (t, 0, sizeof *t); // Includes nice and recent_cpu set of 0
+  memset (t, 0, sizeof *t);
   t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
   t->base_priority = priority;
   t->magic = THREAD_MAGIC;
+  t->parent = running_thread ();
   list_init (&t->priority_donations);
   list_push_back (&all_list, &t->allelem);
 }

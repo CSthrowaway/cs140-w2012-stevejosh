@@ -1,5 +1,6 @@
-#include "userprog/syscall.h"
 #include "userprog/pagedir.h"
+#include "userprog/process.h"
+#include "userprog/syscall.h"
 #include <stdio.h>
 #include <syscall-nr.h>
 #include "devices/shutdown.h"
@@ -8,6 +9,8 @@
 #include "threads/vaddr.h"
 
 static void syscall_handler (struct intr_frame *);
+
+static uint32_t syscall_next_pid;
 
 /* Gives the number of arguments expected for a given system
    call number. Useful to unify the argument-parsing code in
@@ -33,6 +36,7 @@ void
 syscall_init (void) 
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
+  syscall_next_pid = 0;
 }
 
 /* Attempts to translate the given virtual address into a physical address,
@@ -64,6 +68,17 @@ syscall_exit (int code)
   thread_exit ();
 }
 
+/* -- System Call #2 --
+   Executes the given command line, returning the child process' pid, or
+   -1 if the child process fails to load or run for some reason. */
+static pid_t
+syscall_exec (const char *cmd_line)
+{
+  tid_t tid = process_execute (cmd_line);
+  return tid == TID_ERROR ? -1 : tid;
+}
+
+
 /* -- System Call #9 --
    Write size bytes from buffer to the given file file descriptor. Return
    the number of bytes written to the file. Note that fd == STDOUT_FILENO
@@ -86,7 +101,7 @@ syscall_write (int fd, const void *buffer, unsigned size UNUSED)
   }
 }
 
-#if 0
+#if 1
 #define D(x) x
 #else
 #define D(x)
@@ -96,6 +111,8 @@ static void
 syscall_handler (struct intr_frame *f)
 {
   D(printf ("\nSystem Call:\n"));
+  D(printf ("\tMy Parent is: 0x%x\n", thread_current ()->parent));
+  D(printf ("\tMy Parent is: %s\n", thread_current ()->parent->name));
   if (intr_get_level () == INTR_OFF)
     {D(printf ("\tInterrupts are OFF\n"));}
   else
@@ -134,20 +151,16 @@ syscall_handler (struct intr_frame *f)
     }
 
   int ret = -1;
-  switch (syscall_number)
-    {
-      case 0:
-        syscall_halt ();
-        break;
-        
-      case 1:
-        syscall_exit ((int)arg[0]);
-        break;
 
-      case 9:
-        ret = syscall_write ((int)arg[0], (const void*)arg[1], (unsigned)arg[2]);
-        break;
-    }
+  /* Jump to the proper system call based on the system call number. */
+  if (syscall_number == SYS_HALT)
+    syscall_halt ();
+  else if (syscall_number == SYS_EXIT)
+    syscall_exit ((int)arg[0]);
+  else if (syscall_number == SYS_EXEC)
+    syscall_exec ((const char*)arg[0]);
+  else if (syscall_number == SYS_WRITE)
+    ret = syscall_write ((int)arg[0], (const void*)arg[1], (unsigned)arg[2]);  
 
   if (ret != -1)
     f->eax = ret;
