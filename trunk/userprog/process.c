@@ -57,8 +57,7 @@ start_process_parse_args (char **esp_ptr, char *arg_string)
 
   int args = 0;
   int whitespace_size = 0;
-  int file_name_length = strcspn (arg_string, " ");
-  char *arg_string_ptr = &arg_string[file_name_length];
+  char *arg_string_ptr = arg_string;
 
   /* Do an initial pass over the argument string to determine exactly
      how many arguments there are as well as how many bytes of whitespace
@@ -86,8 +85,7 @@ start_process_parse_args (char **esp_ptr, char *arg_string)
 
   /* Compute the amount of memory that will be required to store *all* of
      the contents of argv, including null-terminators. */
-  int argv_memory = strlen (arg_string) - file_name_length
-    - whitespace_size + args;
+  int argv_memory = strlen (arg_string) - whitespace_size + args;
 
   /* For performance reasons, round argv_memory up to the nearest multiple
      of a word so that argc and argv will be word-aligned. */ 
@@ -111,7 +109,7 @@ start_process_parse_args (char **esp_ptr, char *arg_string)
      corresponding argv element to point to the beginning of the token,
      and the increment the string_data pointer appropriately so that we
      put the next token in the right place. */
-  for (token = strtok_r (&arg_string[file_name_length], " ", &save_ptr);
+  for (token = strtok_r (arg_string, " ", &save_ptr);
         token != NULL;
         token = strtok_r (NULL, " ", &save_ptr))
     {
@@ -193,7 +191,8 @@ start_process (void *file_name_)
   /* Parse the arguments and set up the stack such that argc and
      argv are correctly-placed and reflective of the contents
      of the arguments in file_name. */
-  start_process_parse_args((char**)&if_.esp, file_name);
+  if (success)
+    start_process_parse_args((char**)&if_.esp, file_name);
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
