@@ -45,16 +45,6 @@ translate_vaddr (const void* vaddr)
   return pagedir_get_page (thread_current ()->pagedir, vaddr);
 }
 
-/* Invoked when the system call detects a problem with address translation
-   (i.e., the user gave us some bad arguments). Kills the process and
-   releases all process resources. */
-static void
-syscall_kill (void)
-{
-  // TODO : Kill process AND RELEASE RESOURCES
-  thread_exit ();
-}
-
 /* -- System Call #0 --
    Shuts off the OS. */
 static void
@@ -105,7 +95,12 @@ syscall_write (int fd, const void *buffer, unsigned size UNUSED)
 static void
 syscall_handler (struct intr_frame *f)
 {
-  D(printf ("\nSystem Call:\n\tesp vaddr: 0x%x\n", f->esp));
+  D(printf ("\nSystem Call:\n"));
+  if (intr_get_level () == INTR_OFF)
+    {D(printf ("\tInterrupts are OFF\n"));}
+  else
+    {D(printf ("\tInterrupts are ON\n"));}
+  D(printf ("\tesp vaddr: 0x%x\n", f->esp));
   
   /* Attempt to translate the stack pointer to a physical address. */
   void* esp = translate_vaddr(f->esp);
@@ -132,7 +127,7 @@ syscall_handler (struct intr_frame *f)
   for (i = 0; i < args; ++i)
     {
       // TODO : Make sure this address is valid!
-      uint32_t *arg_address = translate_vaddr((uint32_t*)f->esp + i + 1);
+      uint32_t *arg_address = translate_vaddr ((uint32_t*)f->esp + i + 1);
       if (arg_address == NULL) goto kill;
       arg[i] = *arg_address;
       D(printf ("\t\t[%d]: %d (0x%x)\n", i, arg[i], arg[i]));
@@ -160,6 +155,6 @@ syscall_handler (struct intr_frame *f)
 
 kill:
   D(printf ("Something went wrong, I'm killing this process.\n"));
-  syscall_kill ();
+  syscall_exit (-1);
   return;
 }
