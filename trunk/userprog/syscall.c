@@ -101,7 +101,7 @@ syscall_write (int fd, const void *buffer, unsigned size UNUSED)
   }
 }
 
-#if 1
+#if 0
 #define D(x) x
 #else
 #define D(x)
