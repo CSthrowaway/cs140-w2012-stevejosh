@@ -31,15 +31,27 @@ process_execute (const char *file_name)
   char *fn_copy;
   tid_t tid;
 
+  /* We're going to assume that file_name[file_name_length] and
+     file_name[file_name_length + 1] exist and are on the page,
+     so make sure that file_name is sized appropriately. */
+  if (strlen (file_name) >= PGSIZE - 2)
+    return TID_ERROR;
+
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page (0);
+  fn_copy = palloc_get_page (PAL_ZERO);
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
+  
+  /* For now, break the string such that the filename is
+     separate from any arguments. This will allow us to use the
+     same memory for both the name and arguments, while still
+     producing the correct thread name. */
+  fn_copy[strcspn (fn_copy, " ")] = '\0';
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (fn_copy, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
@@ -172,12 +184,6 @@ start_process (void *file_name_)
   struct intr_frame if_;
   bool success;
 
-  /* Determine the length of the entire argument string
-     as well as the length of the actual executable path. */
-  int arg_string_length = strlen (file_name);
-  int file_name_length = strcspn (file_name, " ");
-  file_name[file_name_length] = '\0';
-
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
@@ -185,19 +191,31 @@ start_process (void *file_name_)
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
 
+  /* If load failed, quit. */
+  if (!success)
+  {
+    palloc_free_page (file_name);
+    thread_exit ();
+  }
+  
+  /* Determine the length of the entire argument string
+     as well as the length of the actual executable path.
+     If there are arguments after the filename, restore
+     them by turning the null terminator into a space. */
+  int file_name_length = strlen (file_name);
+  if (file_name[file_name_length + 1] != '\0')
+    file_name[file_name_length] = ' ';
+  int arg_string_length = strlen (file_name);
+  file_name[file_name_length] = '\0';
+
   if (arg_string_length > file_name_length)
     file_name[file_name_length] = ' ';
  
   /* Parse the arguments and set up the stack such that argc and
      argv are correctly-placed and reflective of the contents
      of the arguments in file_name. */
-  if (success)
-    start_process_parse_args((char**)&if_.esp, file_name);
-
-  /* If load failed, quit. */
+  start_process_parse_args((char**)&if_.esp, file_name);
   palloc_free_page (file_name);
-  if (!success) 
-    thread_exit ();
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -208,6 +226,9 @@ start_process (void *file_name_)
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
 }
+
+// TODO REMOVE THIS
+static int process_exited = 0;
 
 /* Waits for thread TID to die and returns its exit status.  If
    it was terminated by the kernel (i.e. killed due to an
@@ -221,13 +242,18 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  return -1;
+  while (1)
+  {
+    timer_sleep(2000);
+    if (process_exited) break;
+  }
 }
 
 /* Free the current process's resources. */
 void
 process_exit (void)
 {
+  process_exited++;
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
