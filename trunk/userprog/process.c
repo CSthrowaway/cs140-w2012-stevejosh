@@ -45,9 +45,9 @@ process_execute (const char *file_name)
   return tid;
 }
 
-/* Parses the argument string for a given command-line (given in
+/* Parses the argument string for a given command-line (given
    arg_string), and sets up the stack such that argc and argv are
-   ready to be accessed by the user program. */   
+   ready to be accessed by the user program. */
 static void
 start_process_parse_args (char **esp_ptr, char *arg_string)
 {
@@ -57,39 +57,42 @@ start_process_parse_args (char **esp_ptr, char *arg_string)
 
   int args = 0;
   int whitespace_size = 0;
-  int file_name_length = strcspn(arg_string, " ");
-  char *p_arg_string = &arg_string[file_name_length];
+  int file_name_length = strcspn (arg_string, " ");
+  char *arg_string_ptr = &arg_string[file_name_length];
 
   /* Do an initial pass over the argument string to determine exactly
      how many arguments there are as well as how many bytes of whitespace
      there are. This will save us from having to use any temporary memory
      while we are setting up the stack with argv's contents. */
-  char c;
-  bool in_whitespace = true;
-  while ((c = *p_arg_string))
-    {
-      if (c != ' ' && in_whitespace)
-        {
-          in_whitespace = false;
-          args++;
-        }
-      else if (c == ' ')
-        {
-          if (!in_whitespace)
-            in_whitespace = true;
-          whitespace_size++;
-        }
-      p_arg_string++;
-    }
-
-  // TODO!!!!
-  // WORD ALIGNMENT!!!
+  {
+    char c;
+    bool in_whitespace = true;
+    while ((c = *arg_string_ptr) != '\0')
+      {
+        if (c != ' ' && in_whitespace)
+          {
+            in_whitespace = false;
+            args++;
+          }
+        else if (c == ' ')
+          {
+            if (!in_whitespace)
+              in_whitespace = true;
+            whitespace_size++;
+          }
+        arg_string_ptr++;
+      }
+  }
 
   /* Compute the amount of memory that will be required to store *all* of
      the contents of argv, including null-terminators. */
-  int argv_memory = strlen(arg_string) - file_name_length
+  int argv_memory = strlen (arg_string) - file_name_length
     - whitespace_size + args;
 
+  /* For performance reasons, round argv_memory up to the nearest multiple
+     of a word so that argc and argv will be word-aligned. */ 
+  argv_memory = ROUND_UP (argv_memory, sizeof(int));
+  
   /* Subtract argv_memory from esp so that we can start setting up argv's
      data. */
   *esp_ptr -= argv_memory;
@@ -103,13 +106,21 @@ start_process_parse_args (char **esp_ptr, char *arg_string)
   char *token, *save_ptr;
   int argv_index = 0;
   
+  /* Break the argument string up into space-delimitted tokens. For each
+     token, copy the token into the string_data section, set the
+     corresponding argv element to point to the beginning of the token,
+     and the increment the string_data pointer appropriately so that we
+     put the next token in the right place. */
   for (token = strtok_r (&arg_string[file_name_length], " ", &save_ptr);
         token != NULL;
         token = strtok_r (NULL, " ", &save_ptr))
     {
        strlcpy (string_data, token, argv_memory);
        argv_array[argv_index] = string_data;
+
+       /* Note the +1 to account for the null terminator. */
        string_data += strlen (token) + 1;
+
        argv_index++;
     }
 
@@ -119,10 +130,14 @@ start_process_parse_args (char **esp_ptr, char *arg_string)
   /* Decrement the stack pointer to point to the top of the argv array. */
   *esp_ptr -= sizeof(char*) * (args + 1);
   
-  /* Now, decrement the stack pointer to point to the pointer to argv,
-     and write the pointer such that it contains the address of the
-     first element of argv (which is argv_array). */
+  /* Decrement the stack pointer to point to char **argv, and write
+     the pointer such that it contains the address of the first element
+     of argv (which is argv_array). */
   *esp_ptr -= sizeof(char**);
+  
+  /* This is weird, but it's correct - esp is 'pointing to' to an array
+     of char*. Hence, esp is effectively a char*** that we may dereference
+     to obtain char **argv on the stack. */
   *(char***)(*esp_ptr) = argv_array;
 
   /* Decrement the stack pointer by the size of an integer and write
@@ -135,15 +150,19 @@ start_process_parse_args (char **esp_ptr, char *arg_string)
   *esp_ptr -= sizeof(void*);
   *(void**)(*esp_ptr) = NULL;
 
-  /*hex_dump(0, *esp_ptr, argv_memory + sizeof(char*)*(args + 1) + 12, true);
-  
-  int argc = *(int*)(*esp_ptr + 4);
-  char** argv = *(char***)(*esp_ptr + 8);
-  
-  printf("%d args:\n", argc);
-  int i = 0;
-  for (i = 0; i < args; ++i)
-    printf("\t[%d] %s\n", i, argv[i]);*/
+  /* TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
+     Remove this bit before submitting! */
+  if (false) {
+    hex_dump(0, *esp_ptr, argv_memory + sizeof(char*)*(args + 1) + 12, true);
+    
+    int argc = *(int*)(*esp_ptr + 4);
+    char** argv = *(char***)(*esp_ptr + 8);
+    
+    printf("%d args:\n", argc);
+    int i = 0;
+    for (i = 0; i < args; ++i)
+      printf("\t[%d] %s\n", i, argv[i]);
+  }
 }
 
 /* A thread function that loads a user process and starts it
