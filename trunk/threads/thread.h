@@ -150,6 +150,8 @@ struct thread
     struct condition child_changed;     /* Condition variable for signalling
                                            that one of this thread's children
                                            has changed status. */
+    struct list open_files;             /* Files currently opened by this
+                                           thread's process. */
 #endif
 
     /* Owned by thread.c. */

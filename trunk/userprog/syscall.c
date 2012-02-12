@@ -48,11 +48,13 @@ static uint8_t syscall_arg_count[] =
   1       /* Close */
 };
 
-struct fdhash_elem
+struct fd_elem
 {
-  struct hash_elem elem;
-  int fd;
-  struct file *file;
+  struct hash_elem h_elem;          /* Element hash table insertion. */
+  struct list_elem l_elem;          /* Element for list insertion. */
+  int fd;                           /* Associated fd number. */
+  int owner_pid;                    /* pid of the owning process. */
+  struct file *file;                /* File system file handle. */
 };
 
 void
@@ -64,55 +66,23 @@ syscall_init (void)
   process_init ();
 }
 
-/* Hash function for fdhash_elems. */
+/* Hash function for fd_elems. */
 static unsigned
 filesys_fdhash_func (const struct hash_elem *e, void *aux UNUSED)
 {
-  struct fdhash_elem *elem = hash_entry(e, struct fdhash_elem, elem);
+  struct fd_elem *elem = hash_entry(e, struct fd_elem, h_elem);
   return (unsigned)elem->fd;
 }
 
-/* Comparator for fdhash_elems. */
+/* Comparator for fd_elems. */
 static bool
 filesys_fdhash_less (const struct hash_elem *a,
                      const struct hash_elem *b,
                      void *aux UNUSED)
 {
-  struct fdhash_elem *a_e = hash_entry(a, struct fdhash_elem, elem);
-  struct fdhash_elem *b_e = hash_entry(b, struct fdhash_elem, elem);
+  struct fd_elem *a_e = hash_entry(a, struct fd_elem, h_elem);
+  struct fd_elem *b_e = hash_entry(b, struct fd_elem, h_elem);
   return (a_e->fd < b_e->fd);
-}
-
-static struct hash_elem*
-filesys_get_elem (int fd)
-{
-  struct fdhash_elem search;
-  search.fd = fd;
-
-  struct hash_elem *found;
-  found = hash_find (&filesys_fdhash, &search.elem);
-
-  if (found == NULL)
-    return NULL;
-    
-  return found;
-}
-
-static struct file*
-filesys_get_file (int fd)
-{
-  struct hash_elem *found = filesys_get_elem (fd);
-  return found != NULL ? hash_entry (found, struct fdhash_elem, elem)->file
-                       : NULL;
-}
-
-/* Return an integer >= 2 that is unique for the life of the kernel.
-   NOTE : Assumes that the filesystem lock has already bee acquired! */
-static int
-allocate_fd (void)
-{
-  static int fd_current = 2;
-  return fd_current++;
 }
 
 /* Acquires the file system lock. */
@@ -127,6 +97,78 @@ static void
 unlock_filesys (void)
 {
   lock_release (&filesys_lock);
+}
+
+/* Frees the resources associated with the given file descriptor
+   element. This includes removing it from the global fd hash table,
+   removing it from the owning thread's fd list, and freeing the
+   associated memory. */
+static void
+filesys_free_fdelem (struct fd_elem *elem)
+{
+  file_close (elem->file);
+  hash_delete (&filesys_fdhash, &elem->h_elem);
+  list_remove (&elem->l_elem);
+  free (elem);
+}
+
+/* Return the fd_elem (stored in the global fd hash table) associated
+   with the given fd number. Returns NULL if the given fd does not
+   exist. */
+static struct fd_elem*
+filesys_get_fdelem (int fd)
+{
+  struct fd_elem search;
+  search.fd = fd;
+
+  struct hash_elem *found;
+  found = hash_find (&filesys_fdhash, &search.h_elem);
+
+  if (found == NULL)
+    return NULL;
+
+  struct fd_elem *fd_elem = hash_entry (found, struct fd_elem, h_elem);
+
+  /* If we found a valid fd but the pid on it doesn't match our tid,
+     this function must pretend like it didn't find anything, because
+     we shouldn't have access to someone else's fd. */
+  return (thread_current ()->tid == fd_elem->owner_pid) ? fd_elem : NULL;
+}
+
+/* Return the file struct associated with the given fd number, or
+   NULL if the given fd does not exist. */
+static struct file*
+filesys_get_file (int fd)
+{
+  struct fd_elem *found = filesys_get_fdelem (fd);
+  return found != NULL ? found->file
+                       : NULL;
+}
+
+void
+filesys_free_open_files (struct thread *t)
+{
+  lock_filesys ();
+  struct list_elem *e;
+  for (e = list_begin (&t->open_files); e != list_end (&t->open_files);)
+    {
+      /* We need to save the next ptr, since we're about to delete e's
+         host memory. */
+      struct list_elem *next = list_next (e);
+      filesys_free_fdelem (list_entry (e, struct fd_elem, l_elem));
+      e = next;
+    }
+
+  unlock_filesys ();
+}
+
+/* Return an integer >= 2 that is unique for the life of the kernel.
+   NOTE : Assumes that the filesystem lock has already bee acquired! */
+static int
+allocate_fd (void)
+{
+  static int fd_current = 2;
+  return fd_current++;
 }
 
 /* Attempts to translate the given virtual address into a physical address,
@@ -285,12 +327,14 @@ syscall_open (const char *file)
       return -1;
     }
 
-  struct fdhash_elem *newhash = malloc (sizeof(struct fdhash_elem));
+  struct fd_elem *newhash = malloc (sizeof(struct fd_elem));
   newhash->fd = allocate_fd ();
   newhash->file = handle;
+  newhash->owner_pid = thread_current ()->tid;
 
   //printf ("Opening 0x%x\n", handle);
-  hash_insert (&filesys_fdhash, &newhash->elem);
+  hash_insert (&filesys_fdhash, &newhash->h_elem);
+  list_push_back (&thread_current ()->open_files, &newhash->l_elem);
   
   // TODO add file_handle to list of files
   unlock_filesys ();
@@ -405,14 +449,9 @@ static void
 syscall_close (int fd)
 {
   lock_filesys ();
-  struct file *handle = filesys_get_file (fd);
-  if (handle != NULL)
-    {
-      file_close (handle);
-      struct hash_elem *elem = filesys_get_elem (fd);
-      hash_delete (&filesys_fdhash, elem);
-      free (elem);
-    }
+  struct fd_elem *elem = filesys_get_fdelem (fd);
+  if (elem != NULL)
+    filesys_free_fdelem (elem);
   unlock_filesys ();
 }
 
