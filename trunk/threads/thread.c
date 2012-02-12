@@ -713,6 +713,9 @@ init_thread (struct thread *t, const char *name, int priority)
   t->base_priority = priority;
   t->magic = THREAD_MAGIC;
   t->parent = running_thread ();
+  cond_init (&t->child_changed);
+  lock_init (&t->child_changed_lock);
+  list_init (&t->children);
   list_init (&t->priority_donations);
   list_push_back (&all_list, &t->allelem);
 }

@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include <threads/synch.h>
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -14,10 +15,38 @@ enum thread_status
     THREAD_DYING        /* About to be destroyed. */
   };
 
+/* States in a process' life cycle. 
+   (Owned by userprog/process.c) */
+enum process_status
+  {
+    PROCESS_INVALID,    /* Process does not exit. */
+    PROCESS_STARTING,   /* Process has not yet started. */
+    PROCESS_STARTED,    /* Process has successfully loaded. */
+    PROCESS_FAILED,     /* Process failed to load. */
+    PROCESS_DONE        /* Process has terminated. */
+  };
+
 /* Thread identifier type.
    You can redefine this to whatever type you like. */
 typedef int tid_t;
+
+/* Process identifier type.
+   Note that the pid of a user process is the same as
+   the tid of the thread running the process. */
+typedef int pid_t;
 #define TID_ERROR ((tid_t) -1)          /* Error value for tid_t. */
+
+/* Owned by userprog/process.c. */
+struct child_status
+  {
+    struct list_elem elem;              /* List element for adding this struct
+                                           to a process' list of children. */
+    pid_t pid;                          /* pid of the child process. */
+    enum process_status status;         /* process status of the child. */
+    int exit_code;                      /* Exit code of process, only valid
+                                           if the process has already
+                                           run and terminated. */
+  };
 
 /* Thread priorities. */
 #define PRI_MIN 0                       /* Lowest priority. */
@@ -105,12 +134,19 @@ struct thread
     struct list_elem sleep_elem;        /* List element for sleep threads. */
     struct list_elem donation_elem;     /* List element for donating a
                                            priority to other threads. */
-    
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
     struct thread *parent;              /* Parent thread. */
+    struct child_status *my_status;     /* Pointer to this thread's child_status
+                                           block in the parent thread. */                                        
+    struct list children;               /* Child processes of this thread. */
+    struct lock child_changed_lock;     /* Lock associated with the condition
+                                           variable below. */
+    struct condition child_changed;     /* Condition variable for signalling
+                                           that one of this thread's children
+                                           has changed status. */
 #endif
 
     /* Owned by thread.c. */
