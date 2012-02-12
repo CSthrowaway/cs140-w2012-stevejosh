@@ -47,7 +47,7 @@ process_execute (const char *file_name)
      file_name[file_name_length + 1] exist and are on the page,
      so make sure that file_name is sized appropriately. Note that
      we also need room for an additional pointer, which will store
-     the pointer to the child's process status block. */
+     the pointer to the child's status block. */
   if (strlen (file_name) >= PGSIZE - 2 - sizeof(void*))
     return TID_ERROR;
 
@@ -56,10 +56,10 @@ process_execute (const char *file_name)
   process_information = palloc_get_page (PAL_ZERO);
   if (process_information == NULL)
     return TID_ERROR;
+    
+  /* Start the copy of file_name at a 4-byte offset, we'll save
+     the first 4 bytes for a pointer to the status block. */
   char *fn_copy = &process_information[sizeof(void*)];
-  
-  /* Save the first sizeof(void*) bytes for the pointer to the
-     child's process status block. */
   strlcpy (fn_copy, file_name, PGSIZE);
   
   /* For now, break the string such that the filename is
@@ -80,31 +80,43 @@ process_execute (const char *file_name)
   *(struct child_status**)process_information = child_status;
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (fn_copy, PRI_DEFAULT, start_process, process_information);
+  tid = thread_create (fn_copy, PRI_DEFAULT,
+                       start_process, process_information);
   
+  /* If it failed to start, free the memory that we had allocated. */
   if (tid == TID_ERROR)
     {
-      // TODO : Do we need to clean up the status block?
+      list_remove (&child_status->elem);
+      free (child_status);
       palloc_free_page (process_information);
       return TID_ERROR;
     }
 
+  /* Update the status block to reflect the child's pid (pid of
+     process == tid of thread running the process) */
   child_status->pid = tid;
+
   /* Wait until the child's status block indicates that the child process
-     has changed state. Do so using the condition variable. */
+     has changed state. Do so using our child_changed condition variable. */
   lock_acquire (&thread_current ()->child_changed_lock);
-  enum process_status status = child_status->status;
-  while (status == PROCESS_STARTING || status == PROCESS_INVALID)
+  enum process_status cstatus = child_status->status;
+  while (cstatus == PROCESS_STARTING)
     {
       cond_wait (&thread_current ()->child_changed,
                  &thread_current ()->child_changed_lock);
-      status = child_status->status;
+      cstatus = child_status->status;
     }
   lock_release (&thread_current ()->child_changed_lock);
 
-  /* If the status block indicates that the process failed, then return
-     TID_ERROR. Otherwise, return the tid of the process. */
-  return (status == PROCESS_FAILED) ? TID_ERROR : tid;
+  /* If the process failed to load, free the status block and return error. */
+  if (cstatus == PROCESS_FAILED)
+    {
+      list_remove (&child_status->elem);
+      free (child_status);
+      return TID_ERROR;
+    }
+
+  return tid;
 }
 
 /* Parses the argument string for a given command-line (given
@@ -226,7 +238,14 @@ start_process_parse_args (char **esp_ptr, char *arg_string)
 }
 
 /* Change the running process' status to the given status, and notify the
-    parent that this process has changed status. */
+   parent that this process has changed status.
+   
+   NOTE : Assumes that proper synchronization between the parent and child
+          is already taken care of. This is an important point, as this could
+          cause a bad memory access if the parent dies while this function
+          is runnig. The caller should have already acquired the process
+          death lock, or the parent should be waiting on the child such that
+          we don't have to worry about death. */
 static void
 process_change_status (enum process_status status)
 {
@@ -327,10 +346,7 @@ get_child_status_block (pid_t pid)
    exception), returns -1.  If TID is invalid or if it was not a
    child of the calling process, or if process_wait() has already
    been successfully called for the given TID, returns -1
-   immediately, without waiting.
-
-   This function will be implemented in problem 2-2.  For now, it
-   does nothing. */
+   immediately, without waiting. */
 int
 process_wait (tid_t child_tid)
 {
@@ -338,12 +354,17 @@ process_wait (tid_t child_tid)
   //printf ("%s is about to wait on %d.\n", thread_current()->name, child_tid);
   
   struct child_status *status_block = get_child_status_block (child_tid);
+
+  /* If we were unable to get the status block, then the process is not
+     a real process, not our child, or has already been waited on. */
   if (status_block == NULL || status_block->status == PROCESS_INVALID)
     {
       lock_release (&thread_current ()->child_changed_lock);
       return -1;
     }
-    
+  
+  /* Wait until the process exits the PROCESS_STARTED status (meaning
+     that the process has finished. */  
   while (status_block->status == PROCESS_STARTED)
     {
       cond_wait (&thread_current ()->child_changed,
@@ -354,6 +375,9 @@ process_wait (tid_t child_tid)
 
   //printf ("Finished waiting! Status is %d, code is %d.\n", status_block->status, status_block->exit_code);
   int exit_code = status_block->exit_code;
+
+  /* Remove the child's status block and free the memory, since we
+     aren't allowed to wait on it again. */
   list_remove (&status_block->elem);
   free (status_block);
 
