@@ -1,3 +1,5 @@
+#include "devices/input.h"
+#include "lib/kernel/hash.h"
 #include "userprog/pagedir.h"
 #include "userprog/process.h"
 #include "userprog/syscall.h"
@@ -12,7 +14,16 @@
 
 static void syscall_handler (struct intr_frame *);
 
-static uint32_t syscall_next_pid;
+static unsigned filesys_fdhash_func (const struct hash_elem *e,
+                                     void *aux);
+
+static bool filesys_fdhash_less (const struct hash_elem *a,
+                                 const struct hash_elem *b,
+                                 void *aux UNUSED);
+
+static struct lock filesys_lock;    /* Lock for file system access. */
+static struct hash filesys_fdhash;  /* Hash table mapping fds to
+                                       struct file*s. */
 
 /* Gives the number of arguments expected for a given system
    call number. Useful to unify the argument-parsing code in
@@ -34,18 +45,68 @@ static uint8_t syscall_arg_count[] =
   1       /* Close */
 };
 
+struct fdhash_elem
+{
+  struct hash_elem elem;
+  int fd;
+  struct file *file;
+};
+
 void
 syscall_init (void) 
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
-  syscall_next_pid = 0;
+  lock_init (&filesys_lock);
+  hash_init (&filesys_fdhash, filesys_fdhash_func, filesys_fdhash_less, NULL);
   process_init ();
+}
+
+/* Hash function for fdhash_elems. */
+static unsigned
+filesys_fdhash_func (const struct hash_elem *e, void *aux UNUSED)
+{
+  struct fdhash_elem *elem = hash_entry(e, struct fdhash_elem, elem);
+  return (unsigned)elem->fd;
+}
+
+/* Comparator for fdhash_elems. */
+static bool
+filesys_fdhash_less (const struct hash_elem *a,
+                     const struct hash_elem *b,
+                     void *aux UNUSED)
+{
+  struct fdhash_elem *a_e = hash_entry(a, struct fdhash_elem, elem);
+  struct fdhash_elem *b_e = hash_entry(b, struct fdhash_elem, elem);
+  return (a_e->fd < b_e->fd);
+}
+
+/* Return an integer >= 2 that is unique for the life of the kernel.
+   NOTE : Assumes that the filesystem lock has already bee acquired! */
+static int
+allocate_fd (void)
+{
+  static int fd_current = 2;
+  return fd_current++;
+}
+
+/* Acquires the file system lock. */
+static void
+lock_filesys (void)
+{
+  lock_acquire (&filesys_lock);
+}
+
+/* Releases the file system lock. */
+static void
+unlock_filesys (void)
+{
+  lock_release (&filesys_lock);
 }
 
 /* Attempts to translate the given virtual address into a physical address,
    returning NULL if the virtual memory has not yet been mapped. */
-static void*
-translate_vaddr (const void* vaddr)
+static const void*
+translate_vaddr (const void *vaddr)
 {
   if (!is_user_vaddr (vaddr))
     return NULL;
@@ -54,22 +115,35 @@ translate_vaddr (const void* vaddr)
 
 /* Checks the supposed string in user memory at the given location, making
    sure that the string is safe to read. Additionally, checks to make sure
-   that the string is <= max_length in size. If the string is unsafe or too
-   big, returns -1. Otherwise, returns the length of the (safe) string. */
+   that the string is <= max_length in size. If the string is unsafe,
+   returns -1. If the string is too big, returns max_length + 1. Otherwise,
+   returns the length of the (safe) string. */
 static int
-translate_str (const char* vstr, int max_length)
+validate_str (const char *vstr, int max_length)
 {
   int i;
   for (i = 0; i <= max_length; ++i)
   {
-    char *c = translate_vaddr(vstr++);
+    const char *c = translate_vaddr (vstr++);
     if (c == NULL)
       return -1;
     if (*c == '\0')
       return i;
   }
   
-  return -1;
+  return max_length + 1;
+}
+
+/* Checks that the given buffer is entirely valid virtual memory. If the
+   buffer is valid, returns the physical address of the buffer. Otherwise,
+   returns NULL. */
+static const void*
+validate_buffer (const void *buffer, int size)
+{
+  const void *begin = translate_vaddr(buffer);
+  const void *end = translate_vaddr((const char*)buffer + size - 1);
+  
+  return (begin != NULL && end != NULL) ? begin : NULL;
 }
 
 /* -- System Call #0 --
@@ -91,35 +165,43 @@ syscall_exit (int code)
   thread_exit ();
 }
 
+static bool
+is_valid_filename (const char* file)
+{
+  int name_size;
+  /* If the user process gives us a bad pointer, kill it. */
+  if (file == NULL || (name_size = validate_str (file, NAME_MAX)) == -1)
+    syscall_exit (-1);
+
+  return name_size <= NAME_MAX;
+}
+
 /* -- System Call #2 --
    Executes the given command line, returning the child process' pid, or
    -1 if the child process fails to load or run for some reason. */
 static pid_t
 syscall_exec (const char *cmd_line)
 {
-  if (translate_str (cmd_line, PGSIZE) == -1)
+  int cmd_line_size;
+  if ((cmd_line_size = validate_str (cmd_line, PGSIZE)) == -1)
     syscall_exit (-1);
+
+  if (cmd_line_size > PGSIZE)
+    return TID_ERROR;
 
   tid_t tid = process_execute (cmd_line);
   return tid == TID_ERROR ? -1 : tid;
 }
 
-/* -- System Call #3 -- */
+/* -- System Call #3 --
+   Waits for the given child process to exit, returning the exit code
+   when the process exits. Returns -1 in the event that the pid is
+   invalid, or that the process doesn't exist as a child of the current
+   one, or that the kernel killed the child process. */
 static int
 syscall_wait (pid_t pid)
 {
   return process_wait (pid);
-}
-
-// Helper functions for locking and unlocking the file system
-static void
-lock_filesystem (void)
-{
-}
-
-static void
-unlock_filesystem (void)
-{
 }
 
 /* -- System Call #4 --
@@ -128,77 +210,105 @@ unlock_filesystem (void)
 static bool
 syscall_create (const char *file, unsigned initial_size)
 {
-  if (file == NULL || translate_str(file, NAME_MAX) == -1)
+  if (!is_valid_filename (file))
     return false;
-  lock_filesystem();
-  bool success = filesys_create(file, initial_size);
-  unlock_filesystem();
+
+  lock_filesys ();
+  bool success = filesys_create (file, initial_size);
+  unlock_filesys ();
   return success;
 }
 
 /* -- System Call #5 --
    Deletes the file called file. Returns true if successful, false
    otherwise. A file can be removed whether it is opened or closed. If it
-   is still opened (file descriptor exists referring to it) file can still
-   be read and write from, but it no longer has a name and no one else can
-   open it. */
+   is still opened (file descriptor exists referring to it), the file can
+   still be read and write from, but it no longer has a name and no one
+   else can open it. */
 static bool
 syscall_remove (const char *file)
 {
-  if (file == NULL || translate_str(file, NAME_MAX) == -1)
+  if (!is_valid_filename (file))
     return false;
-  lock_filesystem();
-  bool success = filesys_remove(file);
-  unlock_filesystem();
+
+  lock_filesys ();
+  bool success = filesys_remove (file);
+  unlock_filesys ();
   return success;
 }
 
 /* -- System Call #6 --
-   Opens a file called file. Returns a nonnegative file descriptor unique
-   per process (but not across processes) or -1 if file could not be
-   opened. 0 and 1 are reserved. Repeated calls with the same file returns
-   a new file descriptor per call */
+   Opens a file called file. Returns a nonnegative file descriptor that is
+   globally unique, or -1 if the file could not be opened. 0 and 1 are
+   reserved. Repeated calls with the same file returns a new file descriptor
+   per call. */
 static int
 syscall_open (const char *file)
 {
-  if (file == NULL || translate_str(file, NAME_MAX) == -1)
+  if (!is_valid_filename (file))
     return -1;
-  lock_filesystem();
-  struct file* fileOpen = filesys_open(file);
-  if (fileOpen != NULL)
+
+  lock_filesys ();
+  struct file* file_handle = filesys_open (file);
+  
+  if (file_handle == NULL)
     {
-      // TODO add fileOpen to list of files
-      unlock_filesystem ();
-      return thread_current ()->fileNumber++;
+      unlock_filesys ();
+      return -1;
+    }
+
+  int fd = allocate_fd ();
+  
+  // TODO add file_handle to list of files
+  unlock_filesys ();
+  return fd;
+}
+
+/* -- System Call #8 -- */
+static int
+syscall_read (int fd, void *buffer, unsigned size)
+{
+  char *cbuffer = (char*)validate_buffer (buffer, size);
+  if (cbuffer == NULL)
+    syscall_exit (-1);
+    
+  if (fd == STDIN_FILENO)
+    {
+      unsigned i;
+      for (i = 0; i < size; ++i)
+        *(cbuffer++) = input_getc ();
+      return size;
     }
   else
     {
-      unlock_filesystem ();
-      return -1;
+      return 0;
     }
 }
-
 
 /* -- System Call #9 --
    Write size bytes from buffer to the given file file descriptor. Return
    the number of bytes written to the file. Note that fd == STDOUT_FILENO
    indicates that the buffer should be written to the console. */
 static int
-syscall_write (int fd, const void *buffer, unsigned size UNUSED)
+syscall_write (int fd, const void *buffer, unsigned size)
 {
+  buffer = validate_buffer (buffer, size);
+  if (buffer == NULL)
+    syscall_exit (-1);
+
   if (fd == STDOUT_FILENO)
-  {
-    /* TODO : Make this safe by checking the buffer bounds. Currently,
-       this is NOT safe. The user program could cause us to overrun
-       the bounds of valid virtual memory. */
-    putbuf (translate_vaddr(buffer), size);
-    return size;
-  }
+    {
+      /* TODO : Make this safe by checking the buffer bounds. Currently,
+         this is NOT safe. The user program could cause us to overrun
+         the bounds of valid virtual memory. */
+      putbuf (buffer, size);
+      return size;
+    }
   else
-  {
-    // TODO : Implement writing to a file
-    return -1;
-  }
+    {
+      // TODO : Implement writing to a file
+      return 0;
+    }
 }
 
 #if 0
@@ -220,7 +330,7 @@ syscall_handler (struct intr_frame *f)
   D(printf ("\tesp vaddr: 0x%x\n", f->esp));
   
   /* Attempt to translate the stack pointer to a physical address. */
-  void* esp = translate_vaddr(f->esp);
+  const void* esp = translate_vaddr(f->esp);
   if (esp == NULL)  goto kill;
   
   D(printf ("\tesp paddr: 0x%x\n", esp));
@@ -244,7 +354,7 @@ syscall_handler (struct intr_frame *f)
   for (i = 0; i < args; ++i)
     {
       // TODO : Make sure this address is valid!
-      uint32_t *arg_address = translate_vaddr ((uint32_t*)f->esp + i + 1);
+      const uint32_t *arg_address = translate_vaddr ((uint32_t*)f->esp + i + 1);
       if (arg_address == NULL) goto kill;
       arg[i] = *arg_address;
       D(printf ("\t\t[%d]: %d (0x%x)\n", i, arg[i], arg[i]));
@@ -272,15 +382,20 @@ syscall_handler (struct intr_frame *f)
       break;
     case SYS_CREATE:
       ret = true;
-      ret_val = syscall_create((const char*)arg[0], (unsigned) arg[1]);
+      ret_val = syscall_create ((const char*)arg[0], (unsigned) arg[1]);
       break;
     case SYS_REMOVE:
       ret = true;
-      ret_val = syscall_remove((const char*)arg[0]);
+      ret_val = syscall_remove ((const char*)arg[0]);
       break;
     case SYS_OPEN:
       ret = true;
-      ret_val = syscall_open((const char*)arg[0]);
+      ret_val = syscall_open ((const char*)arg[0]);
+      break;
+    case SYS_READ:
+      ret = true;
+      ret_val = syscall_read ((int)arg[0], (void*)arg[1],
+                               (unsigned)arg[2]);
       break;
     case SYS_WRITE:
       ret = true;
