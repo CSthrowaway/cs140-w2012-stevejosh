@@ -302,7 +302,7 @@ syscall_read (int fd, void *buffer, unsigned size)
   char *cbuffer = (char*)validate_buffer (buffer, size);
   if (cbuffer == NULL)
     syscall_exit (-1);
-    
+
   if (fd == STDIN_FILENO)
     {
       unsigned i;
@@ -312,11 +312,17 @@ syscall_read (int fd, void *buffer, unsigned size)
     }
   else
     {
+      lock_filesys ();
       struct file *handle = filesys_get_file (fd);
       if (handle == NULL)
-        return -1;
+        {
+          unlock_filesys ();
+          return -1;
+        }
       //printf ("Reading 0x%x\n", handle);
-      return file_read (handle, buffer, size);
+      off_t bytes_read = file_read (handle, buffer, size);
+      unlock_filesys ();
+      return bytes_read;
     }
 }
 
@@ -341,11 +347,17 @@ syscall_write (int fd, const void *buffer, unsigned size)
     }
   else
     {
+      lock_filesys ();
       struct file *handle = filesys_get_file (fd);
       if (handle == NULL)
-        return -1;
+        {
+          unlock_filesys ();
+          return -1;
+        }
       //printf ("Writing 0x%x\n", handle);
-      return file_write (handle, buffer, size);
+      off_t bytes_written = file_write (handle, buffer, size);
+      unlock_filesys ();
+      return bytes_written;
     }
 }
 
@@ -354,6 +366,7 @@ syscall_write (int fd, const void *buffer, unsigned size)
 static void
 syscall_close (int fd)
 {
+  lock_filesys ();
   struct file *handle = filesys_get_file (fd);
   if (handle != NULL)
     {
@@ -362,6 +375,7 @@ syscall_close (int fd)
       hash_delete (&filesys_fdhash, elem);
       free (elem);
     }
+  unlock_filesys ();
 }
 
 #if 0
