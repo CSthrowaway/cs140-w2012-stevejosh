@@ -258,6 +258,7 @@ start_process (void *process_information_)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
+  /* TODO TODO TODO TODO TODO TODO : Synchronize file access in load! */
 
   /* Set the my_status pointer to point to the parent's child status
      block, as given in the process_information page. */
@@ -396,20 +397,41 @@ process_release (int exit_code)
   printf("%s: exit(%d)\n", thread_current ()->name, exit_code); 
   //printf ("Process %s is about to die with code %d.\n", thread_current ()->name, exit_code);
  
-  if (thread_current ()->parent != NULL)
+  /* Check to see if I've been orphaned. If so, I'm responsible
+     for cleaning up my child status block, since my parent no
+     longer owns it. */
+  if (thread_current ()->my_status->status == PROCESS_ORPHANED)
+    {
+      free (thread_current ()->my_status);
+    }
+    
+  /* Otherwise, update my status block to indicate my exit code,
+     and inform my parent that my status has changed. */
+  else if (thread_current ()->parent != NULL)
     {
       thread_current ()->my_status->exit_code = exit_code;
       process_change_status (PROCESS_DONE);
     }
 
-/*  for (e = list_begin (thread_current ()->children);
-       e != list_end (thread_current ()->children);
-       e = list_next (e))
+  /* Orphan all of my children. */
+  struct list_elem *e;
+  for (e = list_begin (&thread_current ()->children);
+       e != list_end (&thread_current ()->children);)
     {
       struct child_status *s = list_entry (e, struct child_status, elem);
-      if (s->pid == pid)
-        return s;
-    }*/
+
+      /* Advance the iterator *before* we potentially free the memory. */
+      e = list_next (e);
+
+      /* If the process is no longer alive, we're responsible for
+         freeing this memory. If they ARE alive, we need to orphan
+         them so that they know that they're responsible for freeing
+         their own status block. */
+      if (s->status == PROCESS_DONE)
+        free (s);
+      else
+        s->status = PROCESS_ORPHANED;
+    }
   
   lock_release (&process_death_lock);
 }
@@ -613,7 +635,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
   file_close (file);
   return success;
 }
-
+
 /* load() helpers. */
 
 static bool install_page (void *upage, void *kpage, bool writable);

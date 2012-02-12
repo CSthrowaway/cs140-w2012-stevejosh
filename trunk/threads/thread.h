@@ -23,7 +23,10 @@ enum process_status
     PROCESS_STARTING,   /* Process has not yet started. */
     PROCESS_STARTED,    /* Process has successfully loaded. */
     PROCESS_FAILED,     /* Process failed to load. */
-    PROCESS_DONE        /* Process has terminated. */
+    PROCESS_DONE,       /* Process has terminated. */
+    PROCESS_ORPHANED    /* The process' parent has died, so the process
+                           must no longer try to report status changes
+                           to the parent. */
   };
 
 /* Thread identifier type.
