@@ -457,6 +457,8 @@ process_release (int exit_code)
         s->status = PROCESS_ORPHANED;
     }
   
+  filesys_free_open_files (thread_current ());
+  
   lock_release (&process_death_lock);
 }
 

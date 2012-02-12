@@ -716,6 +716,7 @@ init_thread (struct thread *t, const char *name, int priority)
   cond_init (&t->child_changed);
   lock_init (&t->child_changed_lock);
   list_init (&t->children);
+  list_init (&t->open_files);
   list_init (&t->priority_donations);
   list_push_back (&all_list, &t->allelem);
 }
