@@ -196,9 +196,11 @@ is_valid_filename (const char* file)
 {
   int name_size;
   /* If the user process gives us a bad pointer, kill it. */
-  if (file == NULL || (name_size = validate_str (file, NAME_MAX)) == -1)
+  if (file == NULL)
     syscall_exit (-1);
-
+  name_size = validate_str (file, NAME_MAX);
+  if (name_size == -1)
+    syscall_exit(-1);
   return name_size <= NAME_MAX;
 }
 
@@ -372,6 +374,31 @@ syscall_write (int fd, const void *buffer, unsigned size)
     }
 }
 
+/* -- System Call #10 --
+   Changes the next byte to be read or written in open file fd to
+   position. */
+static void
+syscall_seek (int fd, unsigned position)
+{
+  lock_filesys ();
+  struct file *handle = filesys_get_file (fd);
+  file_seek (handle, position);
+  unlock_filesys ();
+}
+
+/* -- System Call #11 --
+   Returns the position of the next byte to be read or written in open
+   file fd, expressed in bytes from the beginning of the file. */
+static unsigned
+syscall_tell (int fd)
+{
+  lock_filesys ();
+  struct file *handle = filesys_get_file (fd);
+  unsigned tellVal = file_tell (handle);
+  unlock_filesys ();
+  return tellVal;
+}
+
 /* -- System Call #12 --
    Closes the file associated with the given fd. */
 static void
@@ -484,7 +511,15 @@ syscall_handler (struct intr_frame *f)
       ret_val = syscall_write ((int)arg[0], (const void*)arg[1],
                                (unsigned)arg[2]);
       break;
-    case SYS_CLOSE:
+    case SYS_SEEK:
+      ret = false;
+      syscall_seek((int)arg[0], (unsigned)arg[1]);
+      break;
+    case SYS_TELL:
+      ret = true;
+      ret_val = syscall_tell((int)arg[0]);
+      break;
+    case SYS_CLOSE:      
       syscall_close ((int)arg[0]);
       break;
   }
