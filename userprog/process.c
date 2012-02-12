@@ -14,11 +14,23 @@
 #include "threads/flags.h"
 #include "threads/init.h"
 #include "threads/interrupt.h"
+#include "threads/malloc.h"
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
 static thread_func start_process NO_RETURN;
+static struct lock process_death_lock;  /* Must be acquired by a process that
+                                           wishes to exit. */
+
+/* Initializes all static data associated with processes.
+   Gets called from syscall_init in syscall.c */
+void
+process_init (void)
+{
+  lock_init (&process_death_lock);
+}
+
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
 /* Starts a new thread running a user program loaded from
@@ -28,20 +40,26 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
 tid_t
 process_execute (const char *file_name) 
 {
-  char *fn_copy;
+  char *process_information;
   tid_t tid;
 
   /* We're going to assume that file_name[file_name_length] and
      file_name[file_name_length + 1] exist and are on the page,
-     so make sure that file_name is sized appropriately. */
-  if (strlen (file_name) >= PGSIZE - 2)
+     so make sure that file_name is sized appropriately. Note that
+     we also need room for an additional pointer, which will store
+     the pointer to the child's process status block. */
+  if (strlen (file_name) >= PGSIZE - 2 - sizeof(void*))
     return TID_ERROR;
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page (PAL_ZERO);
-  if (fn_copy == NULL)
+  process_information = palloc_get_page (PAL_ZERO);
+  if (process_information == NULL)
     return TID_ERROR;
+  char *fn_copy = &process_information[sizeof(void*)];
+  
+  /* Save the first sizeof(void*) bytes for the pointer to the
+     child's process status block. */
   strlcpy (fn_copy, file_name, PGSIZE);
   
   /* For now, break the string such that the filename is
@@ -50,11 +68,43 @@ process_execute (const char *file_name)
      producing the correct thread name. */
   fn_copy[strcspn (fn_copy, " ")] = '\0';
 
+  /* Create a child status block for the process we're about to spawn,
+     initialize it to indicate that the process has not yet attempted to
+     load, then add it to the list of child process status blocks. */
+  struct child_status *child_status = malloc(sizeof(struct child_status));
+  child_status->status = PROCESS_STARTING;
+  list_push_back (&thread_current ()->children, &child_status->elem);
+
+  /* Write the pointer to the child status block to the process information
+     page. */
+  *(struct child_status**)process_information = child_status;
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (fn_copy, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (fn_copy, PRI_DEFAULT, start_process, process_information);
+  
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
-  return tid;
+    {
+      // TODO : Do we need to clean up the status block?
+      palloc_free_page (process_information);
+      return TID_ERROR;
+    }
+
+  child_status->pid = tid;
+  /* Wait until the child's status block indicates that the child process
+     has changed state. Do so using the condition variable. */
+  lock_acquire (&thread_current ()->child_changed_lock);
+  enum process_status status = child_status->status;
+  while (status == PROCESS_STARTING || status == PROCESS_INVALID)
+    {
+      cond_wait (&thread_current ()->child_changed,
+                 &thread_current ()->child_changed_lock);
+      status = child_status->status;
+    }
+  lock_release (&thread_current ()->child_changed_lock);
+
+  /* If the status block indicates that the process failed, then return
+     TID_ERROR. Otherwise, return the tid of the process. */
+  return (status == PROCESS_FAILED) ? TID_ERROR : tid;
 }
 
 /* Parses the argument string for a given command-line (given
@@ -175,12 +225,30 @@ start_process_parse_args (char **esp_ptr, char *arg_string)
   }
 }
 
+/* Change the running process' status to the given status, and notify the
+    parent that this process has changed status. */
+static void
+process_change_status (enum process_status status)
+{
+  thread_current ()->my_status->status = status;
+
+  struct thread *parent = thread_current ()->parent;
+  if (parent != NULL)
+    {
+      lock_acquire(&parent->child_changed_lock);
+      cond_signal(&parent->child_changed, &parent->child_changed_lock);
+      lock_release(&parent->child_changed_lock);
+    }
+}
+
 /* A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process (void *process_information_)
 {
-  char *file_name = file_name_;
+  struct child_status *status_block =
+    *(struct child_status**)process_information_;
+  char *file_name = (char*)process_information_ + sizeof(void*);
   struct intr_frame if_;
   bool success;
 
@@ -191,10 +259,15 @@ start_process (void *file_name_)
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
 
+  /* Set the my_status pointer to point to the parent's child status
+     block, as given in the process_information page. */
+  thread_current ()->my_status = status_block;
+
   /* If load failed, quit. */
   if (!success)
   {
-    palloc_free_page (file_name);
+    process_change_status (PROCESS_FAILED);
+    palloc_free_page (process_information_);
     thread_exit ();
   }
   
@@ -210,13 +283,14 @@ start_process (void *file_name_)
 
   if (arg_string_length > file_name_length)
     file_name[file_name_length] = ' ';
- 
+
   /* Parse the arguments and set up the stack such that argc and
      argv are correctly-placed and reflective of the contents
      of the arguments in file_name. */
-  start_process_parse_args((char**)&if_.esp, file_name);
-  palloc_free_page (file_name);
-
+  start_process_parse_args ((char**)&if_.esp, file_name);
+  palloc_free_page (process_information_);
+  process_change_status (PROCESS_STARTED);
+  
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
      threads/intr-stubs.S).  Because intr_exit takes all of its
@@ -227,8 +301,25 @@ start_process (void *file_name_)
   NOT_REACHED ();
 }
 
-// TODO REMOVE THIS
-static int process_exited = 0;
+/* Iterates through the list of this process' children and returns
+   the child status block for the given pid, or NULL if the child
+   does not exist. */
+static struct child_status *
+get_child_status_block (pid_t pid)
+{
+  struct list *l = &thread_current()->children;
+
+  struct list_elem *e;
+  for (e = list_begin (l); e != list_end (l);
+       e = list_next (e))
+    {
+      struct child_status *s = list_entry (e, struct child_status, elem);
+      if (s->pid == pid)
+        return s;
+    }
+  
+  return NULL;
+}
 
 /* Waits for thread TID to die and returns its exit status.  If
    it was terminated by the kernel (i.e. killed due to an
@@ -240,21 +331,39 @@ static int process_exited = 0;
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid)
 {
-  // TODO : IMPLEMENT THIS
-  while (1)
-  {
-    timer_sleep(2000);
-    if (process_exited) break;
-  }
+  lock_acquire (&thread_current ()->child_changed_lock);
+  //printf ("%s is about to wait on %d.\n", thread_current()->name, child_tid);
+  
+  struct child_status *status_block = get_child_status_block (child_tid);
+  if (status_block == NULL || status_block->status == PROCESS_INVALID)
+    {
+      lock_release (&thread_current ()->child_changed_lock);
+      return -1;
+    }
+    
+  while (status_block->status == PROCESS_STARTED)
+    {
+      cond_wait (&thread_current ()->child_changed,
+                 &thread_current ()->child_changed_lock);
+      /* NOTE : Since the status_block address won't change, we don't
+                need to call get_child_status_block more than once. */
+    }
+
+  //printf ("Finished waiting! Status is %d, code is %d.\n", status_block->status, status_block->exit_code);
+  int exit_code = status_block->exit_code;
+  list_remove (&status_block->elem);
+  free (status_block);
+
+  lock_release (&thread_current ()->child_changed_lock);
+  return exit_code;
 }
 
 /* Free the current process's resources. */
 void
 process_exit (void)
 {
-  process_exited++;
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
@@ -274,6 +383,35 @@ process_exit (void)
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
+}
+
+/* Must be called before a running process gets killed.
+   Unlike process_exit, this function has access to the
+   exit code of the process, and will make preparations
+   for the process to die. */
+void
+process_release (int exit_code)
+{
+  lock_acquire (&process_death_lock);
+  printf("%s: exit(%d)\n", thread_current ()->name, exit_code); 
+  //printf ("Process %s is about to die with code %d.\n", thread_current ()->name, exit_code);
+ 
+  if (thread_current ()->parent != NULL)
+    {
+      thread_current ()->my_status->exit_code = exit_code;
+      process_change_status (PROCESS_DONE);
+    }
+
+/*  for (e = list_begin (thread_current ()->children);
+       e != list_end (thread_current ()->children);
+       e = list_next (e))
+    {
+      struct child_status *s = list_entry (e, struct child_status, elem);
+      if (s->pid == pid)
+        return s;
+    }*/
+  
+  lock_release (&process_death_lock);
 }
 
 /* Sets up the CPU for running user code in the current

@@ -37,6 +37,7 @@ syscall_init (void)
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
   syscall_next_pid = 0;
+  process_init ();
 }
 
 /* Attempts to translate the given virtual address into a physical address,
@@ -64,7 +65,7 @@ static void
 syscall_exit (int code)
 {
   // TODO : Return this code to anyone that's waiting on me
-  printf("%s: exit(%d)\n", thread_current ()->name, code); 
+  process_release (code);
   thread_exit ();
 }
 
@@ -75,9 +76,17 @@ static pid_t
 syscall_exec (const char *cmd_line)
 {
   tid_t tid = process_execute (cmd_line);
+  /* TODO : This isn't right. we need to wait to make sure that the child
+     thread starts up properly. */
   return tid == TID_ERROR ? -1 : tid;
 }
 
+/* -- System Call #3 -- */
+static int
+syscall_wait (pid_t pid)
+{
+  return process_wait (pid);
+}
 
 /* -- System Call #9 --
    Write size bytes from buffer to the given file file descriptor. Return
@@ -150,20 +159,35 @@ syscall_handler (struct intr_frame *f)
       D(printf ("\t\t[%d]: %d (0x%x)\n", i, arg[i], arg[i]));
     }
 
-  int ret = -1;
+  bool ret = false;
+  int ret_val = -1;
 
   /* Jump to the proper system call based on the system call number. */
-  if (syscall_number == SYS_HALT)
-    syscall_halt ();
-  else if (syscall_number == SYS_EXIT)
-    syscall_exit ((int)arg[0]);
-  else if (syscall_number == SYS_EXEC)
-    syscall_exec ((const char*)arg[0]);
-  else if (syscall_number == SYS_WRITE)
-    ret = syscall_write ((int)arg[0], (const void*)arg[1], (unsigned)arg[2]);  
-
-  if (ret != -1)
-    f->eax = ret;
+  switch (syscall_number)
+    {
+    case SYS_HALT:
+      syscall_halt ();
+      break;
+    case SYS_EXIT:
+      syscall_exit ((int)arg[0]);
+      break;
+    case SYS_EXEC:
+      ret = true;
+      ret_val = syscall_exec ((const char*)arg[0]);
+      break;
+    case SYS_WAIT:
+      ret = true;
+      ret_val = syscall_wait ((pid_t)arg[0]);
+      break;
+    case SYS_WRITE:
+      ret = true;
+      ret_val = syscall_write ((int)arg[0], (const void*)arg[1],
+                               (unsigned)arg[2]);
+      break;
+  }
+  
+  if (ret)
+    f->eax = ret_val;
   return;
 
 kill:
