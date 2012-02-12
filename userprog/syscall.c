@@ -7,6 +7,8 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "filesys/directory.h"
+#include "filesys/filesys.h"
 
 static void syscall_handler (struct intr_frame *);
 
@@ -109,6 +111,74 @@ syscall_wait (pid_t pid)
   return process_wait (pid);
 }
 
+// Helper functions for locking and unlocking the file system
+static void
+lock_filesystem (void)
+{
+}
+
+static void
+unlock_filesystem (void)
+{
+}
+
+/* -- System Call #4 --
+   Creates a new file initially initial_size in bytes. Returns true if
+   successful, false otherwise. Does not open the new file. */
+static bool
+syscall_create (const char *file, unsigned initial_size)
+{
+  if (file == NULL || translate_str(file, NAME_MAX) == -1)
+    return false;
+  lock_filesystem();
+  bool success = filesys_create(file, initial_size);
+  unlock_filesystem();
+  return success;
+}
+
+/* -- System Call #5 --
+   Deletes the file called file. Returns true if successful, false
+   otherwise. A file can be removed whether it is opened or closed. If it
+   is still opened (file descriptor exists referring to it) file can still
+   be read and write from, but it no longer has a name and no one else can
+   open it. */
+static bool
+syscall_remove (const char *file)
+{
+  if (file == NULL || translate_str(file, NAME_MAX) == -1)
+    return false;
+  lock_filesystem();
+  bool success = filesys_remove(file);
+  unlock_filesystem();
+  return success;
+}
+
+/* -- System Call #6 --
+   Opens a file called file. Returns a nonnegative file descriptor unique
+   per process (but not across processes) or -1 if file could not be
+   opened. 0 and 1 are reserved. Repeated calls with the same file returns
+   a new file descriptor per call */
+static int
+syscall_open (const char *file)
+{
+  if (file == NULL || translate_str(file, NAME_MAX) == -1)
+    return -1;
+  lock_filesystem();
+  struct file* fileOpen = filesys_open(file);
+  if (fileOpen != NULL)
+    {
+      // TODO add fileOpen to list of files
+      unlock_filesystem ();
+      return thread_current ()->fileNumber++;
+    }
+  else
+    {
+      unlock_filesystem ();
+      return -1;
+    }
+}
+
+
 /* -- System Call #9 --
    Write size bytes from buffer to the given file file descriptor. Return
    the number of bytes written to the file. Note that fd == STDOUT_FILENO
@@ -199,6 +269,18 @@ syscall_handler (struct intr_frame *f)
     case SYS_WAIT:
       ret = true;
       ret_val = syscall_wait ((pid_t)arg[0]);
+      break;
+    case SYS_CREATE:
+      ret = true;
+      ret_val = syscall_create((const char*)arg[0], (unsigned) arg[1]);
+      break;
+    case SYS_REMOVE:
+      ret = true;
+      ret_val = syscall_remove((const char*)arg[0]);
+      break;
+    case SYS_OPEN:
+      ret = true;
+      ret_val = syscall_open((const char*)arg[0]);
       break;
     case SYS_WRITE:
       ret = true;
