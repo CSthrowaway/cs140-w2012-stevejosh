@@ -3,13 +3,16 @@
 #include "userprog/pagedir.h"
 #include "userprog/process.h"
 #include "userprog/syscall.h"
+#include "userprog/pagedir.h"
 #include <stdio.h>
 #include <syscall-nr.h>
 #include "devices/shutdown.h"
 #include "threads/interrupt.h"
+#include "threads/malloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "filesys/directory.h"
+#include "filesys/file.h"
 #include "filesys/filesys.h"
 
 static void syscall_handler (struct intr_frame *);
@@ -78,6 +81,29 @@ filesys_fdhash_less (const struct hash_elem *a,
   struct fdhash_elem *a_e = hash_entry(a, struct fdhash_elem, elem);
   struct fdhash_elem *b_e = hash_entry(b, struct fdhash_elem, elem);
   return (a_e->fd < b_e->fd);
+}
+
+static struct hash_elem*
+filesys_get_elem (int fd)
+{
+  struct fdhash_elem search;
+  search.fd = fd;
+
+  struct hash_elem *found;
+  found = hash_find (&filesys_fdhash, &search.elem);
+
+  if (found == NULL)
+    return NULL;
+    
+  return found;
+}
+
+static struct file*
+filesys_get_file (int fd)
+{
+  struct hash_elem *found = filesys_get_elem (fd);
+  return found != NULL ? hash_entry (found, struct fdhash_elem, elem)->file
+                       : NULL;
 }
 
 /* Return an integer >= 2 that is unique for the life of the kernel.
@@ -249,19 +275,24 @@ syscall_open (const char *file)
     return -1;
 
   lock_filesys ();
-  struct file* file_handle = filesys_open (file);
+  struct file* handle = filesys_open (file);
   
-  if (file_handle == NULL)
+  if (handle == NULL)
     {
       unlock_filesys ();
       return -1;
     }
 
-  int fd = allocate_fd ();
+  struct fdhash_elem *newhash = malloc (sizeof(struct fdhash_elem));
+  newhash->fd = allocate_fd ();
+  newhash->file = handle;
+
+ // printf ("Opening 0x%x\n", handle);
+  hash_insert (&filesys_fdhash, &newhash->elem);
   
   // TODO add file_handle to list of files
   unlock_filesys ();
-  return fd;
+  return newhash->fd;
 }
 
 /* -- System Call #8 -- */
@@ -281,7 +312,11 @@ syscall_read (int fd, void *buffer, unsigned size)
     }
   else
     {
-      return 0;
+      struct file *handle = filesys_get_file (fd);
+      if (handle == NULL)
+        return -1;
+      //printf ("Reading 0x%x\n", handle);
+      return file_read (handle, buffer, size);
     }
 }
 
@@ -306,8 +341,26 @@ syscall_write (int fd, const void *buffer, unsigned size)
     }
   else
     {
-      // TODO : Implement writing to a file
-      return 0;
+      struct file *handle = filesys_get_file (fd);
+      if (handle == NULL)
+        return -1;
+      //printf ("Writing 0x%x\n", handle);
+      return file_write (handle, buffer, size);
+    }
+}
+
+/* -- System Call #12 --
+   Closes the file associated with the given fd. */
+static void
+syscall_close (int fd)
+{
+  struct file *handle = filesys_get_file (fd);
+  if (handle != NULL)
+    {
+      file_close (handle);
+      struct hash_elem *elem = filesys_get_elem (fd);
+      hash_delete (&filesys_fdhash, elem);
+      free (elem);
     }
 }
 
@@ -401,6 +454,9 @@ syscall_handler (struct intr_frame *f)
       ret = true;
       ret_val = syscall_write ((int)arg[0], (const void*)arg[1],
                                (unsigned)arg[2]);
+      break;
+    case SYS_CLOSE:
+      syscall_close ((int)arg[0]);
       break;
   }
   
