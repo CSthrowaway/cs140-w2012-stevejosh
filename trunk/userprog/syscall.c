@@ -287,12 +287,23 @@ syscall_open (const char *file)
   newhash->fd = allocate_fd ();
   newhash->file = handle;
 
- // printf ("Opening 0x%x\n", handle);
+  //printf ("Opening 0x%x\n", handle);
   hash_insert (&filesys_fdhash, &newhash->elem);
   
   // TODO add file_handle to list of files
   unlock_filesys ();
   return newhash->fd;
+}
+
+/* -- System Call #7 -- */
+static int
+syscall_filesize (int fd)
+{
+  lock_filesys ();
+  struct file *handle = filesys_get_file (fd);
+  int return_value = (handle == NULL) ? -1 : file_length (handle);
+  unlock_filesys ();
+  return return_value;
 }
 
 /* -- System Call #8 -- */
@@ -319,7 +330,7 @@ syscall_read (int fd, void *buffer, unsigned size)
           unlock_filesys ();
           return -1;
         }
-      //printf ("Reading 0x%x\n", handle);
+      //printf ("Reading %d bytes from 0x%x\n", size, handle);
       off_t bytes_read = file_read (handle, buffer, size);
       unlock_filesys ();
       return bytes_read;
@@ -459,6 +470,10 @@ syscall_handler (struct intr_frame *f)
       ret = true;
       ret_val = syscall_open ((const char*)arg[0]);
       break;
+    case SYS_FILESIZE:
+      ret = true;
+      ret_val = syscall_filesize ((int)arg[0]);
+      break;
     case SYS_READ:
       ret = true;
       ret_val = syscall_read ((int)arg[0], (void*)arg[1],
@@ -473,7 +488,7 @@ syscall_handler (struct intr_frame *f)
       syscall_close ((int)arg[0]);
       break;
   }
-  
+ 
   if (ret)
     f->eax = ret_val;
   return;
