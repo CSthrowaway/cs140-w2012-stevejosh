@@ -50,6 +50,26 @@ translate_vaddr (const void* vaddr)
   return pagedir_get_page (thread_current ()->pagedir, vaddr);
 }
 
+/* Checks the supposed string in user memory at the given location, making
+   sure that the string is safe to read. Additionally, checks to make sure
+   that the string is <= max_length in size. If the string is unsafe or too
+   big, returns -1. Otherwise, returns the length of the (safe) string. */
+static int
+translate_str (const char* vstr, int max_length)
+{
+  int i;
+  for (i = 0; i <= max_length; ++i)
+  {
+    char *c = translate_vaddr(vstr++);
+    if (c == NULL)
+      return -1;
+    if (*c == '\0')
+      return i;
+  }
+  
+  return -1;
+}
+
 /* -- System Call #0 --
    Shuts off the OS. */
 static void
@@ -75,9 +95,10 @@ syscall_exit (int code)
 static pid_t
 syscall_exec (const char *cmd_line)
 {
+  if (translate_str (cmd_line, PGSIZE) == -1)
+    syscall_exit (-1);
+
   tid_t tid = process_execute (cmd_line);
-  /* TODO : This isn't right. we need to wait to make sure that the child
-     thread starts up properly. */
   return tid == TID_ERROR ? -1 : tid;
 }
 
