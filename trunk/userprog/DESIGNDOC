@@ -1,8 +1,8 @@
-		     +--------------------------+
-		     |		CS 140		|
-     		     | PROJECT 2: USER PROGRAMS	|
-		     |	   DESIGN DOCUMENT	|
-		     +--------------------------+
+                        +--------------------------+
+                        |          CS 140          |
+                        | PROJECT 2: USER PROGRAMS |
+                        |      DESIGN DOCUMENT     |
+                        +--------------------------+
 
 ---- GROUP ----
 
@@ -35,9 +35,34 @@ Steve Lesser <sklesser@stanford.edu>
 >> you arrange for the elements of argv[] to be in the right order?
 >> How do you avoid overflowing the stack page?
 
+Originally, process_execute allocated a page of memory and copied
+the filename to that page to pass it to the newly-executed process.
+We use the same page to pass the arguments to the new process. In
+start_process, we call start_process_parse_args, which sets up the
+stack.
+
+start_process_parse_args works by making an initial pass over the
+arguments, calculating how many arguments exist and how much
+whitespace there is. Using this information, we can then compute
+the exact amount of memory required for the string data of argv
+as well as the pointers of argv. Hance, at this point, we compute
+how much total stack space we'll need. If it exceeds a page, we
+return false and start_process reports failure. In this way, we
+prevent overflow of the stack page.
+
+After verifying that the memory requirements are reasonable, the
+function copies all of the string data onto the stack in order
+of appearance, while simultaneously wiring up the argv pointers
+to the string data that is being written. This is only possible
+because we pre-computed the memory requirements, so we know
+exactly where everything should be on the stack.
+
 ---- RATIONALE ----
 
 >> A3: Why does Pintos implement strtok_r() but not strtok()?
+
+strtok is a poorly-thought-out function in the C library. The
+primary concern is that it uses global data to TODO.
 
 >> A4: In Pintos, the kernel separates commands into a executable name
 >> and arguments.  In Unix-like systems, the shell does this
@@ -147,6 +172,31 @@ struct thread
 >> for a system call that only copies 2 bytes of data?  Is there room
 >> for improvement in these numbers, and how much?
 
+The number of inspections depends on the type of data that is being
+read. For a void* buffer (read/write), 2 inspections will always occur.
+For a char* buffer, a maximum of NAME_MAX inspections will occur if
+the string is associated with a file operator, but PGSIZE inspections
+will occur if the string is associated with exec.
+
+If the system call only copies 2 bytes of data, 2 inspections will
+still occur for a void* buffer, and 2 inspections will occur for a
+char* buffer.
+
+There is some room for improvement in the number for char*s. Currently,
+our scheme for validating null-terminated strings is very simple:
+march along the string until a null-terminator is found, validating
+each byte along the way. We could have done something fancier here by
+recognizing that the address only needs to be validated if it lies on
+a page boundary. We chose the simple route, however, since it would
+be rather uncommon for huge strings to be passed to exec. Furthermore,
+file-related strings are only validated up to a maximum of NAME_MAX
+characters, so the performance loss for them is negligible. Overall,
+we feel that the slight performance tradeoff is worth the simplicity
+and safety of our implementation.
+
+There is, of course, no room for improvement with fixed-size buffers:
+we simply validate the head and the tail of the buffer.
+
 >> B5: Briefly describe your implementation of the "wait" system call
 >> and how it interacts with process termination.
 
@@ -219,9 +269,9 @@ element of it's parent.
 >> B11: The default tid_t to pid_t mapping is the identity mapping.
 >> If you changed it, what advantages are there to your approach?
 
-We did not change this mapping. Since we knew each process always had
-exactly one thread and each process had a unique ID we thought it would be
-simplest to use that same ID as the tid_t.
+We did not change this mapping. We felt that the simplicity of the
+mapping was a big win, and could see no advantages in straying from
+it.
 
       	     SURVEY QUESTIONS
 	     ================
@@ -241,6 +291,19 @@ the quarter.
 >> Is there some particular fact or hint we should give students in
 >> future quarters to help them solve the problems?  Conversely, did you
 >> find any of our guidance to be misleading?
+
+It was very unclear to us what the following means;
+"You should implement the standard Unix semantics for files. That is,
+when a file is removed any process which has a file descriptor for that
+file may continue to use that descriptor. [...] "
+
+It is very unclear how much of this already exists. We did some digging
+and found that the filesystem inodes already support a reference-counting
+mechanism, but, annoyingly, that the directory layer does not make use
+of this mechanism (why!?!?). Given that we were advised not to touch
+the file system code, it seemed that the best choice was to write another
+reference-counting mechanism at the syscall layer. We're still unsure if
+this was the intent of the assignment.
 
 >> Do you have any suggestions for the TAs to more effectively assist
 >> students, either for future quarters or the remaining projects?
