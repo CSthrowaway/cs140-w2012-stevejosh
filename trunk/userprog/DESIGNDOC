@@ -52,6 +52,85 @@ Steve Lesser <sklesser@stanford.edu>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+------------ In syscall.c ---------------
+
+static struct lock filesys_lock;    /* Lock for file system access. */
+static struct hash filesys_fdhash;  /* Hash table mapping fds to
+                                       struct file*s. */
+
+/* Gives the number of arguments expected for a given system
+   call number. Useful to unify the argument-parsing code in
+   syscall_handler. */
+static uint8_t syscall_arg_count[] =
+{
+  0,      /* Halt */
+  1,      /* Exit */
+  1,      /* Exec */
+  1,      /* Wait */
+  2,      /* Create */
+  1,      /* Remove */
+  1,      /* Open */
+  1,      /* FileSize */
+  3,      /* Read */
+  3,      /* Write */
+  2,      /* Seek */
+  1,      /* Tell */
+  1       /* Close */
+};
+
+
+struct fdhash_elem
+{
+  struct hash_elem elem;
+  int fd;
+  struct file *file;
+};
+
+------------ In thread.h -----------------
+
+/* States in a process' life cycle. 
+   (Owned by userprog/process.c) */
+enum process_status
+  {
+    PROCESS_INVALID,    /* Process does not exit. */
+    PROCESS_STARTING,   /* Process has not yet started. */
+    PROCESS_STARTED,    /* Process has successfully loaded. */
+    PROCESS_FAILED,     /* Process failed to load. */
+    PROCESS_DONE,       /* Process has terminated. */
+    PROCESS_ORPHANED    /* The process' parent has died, so the process
+                           must no longer try to report status changes
+                           to the parent. */
+  };
+
+typedef int pid_t;
+
+/* Owned by userprog/process.c. */
+struct child_status
+  {
+    struct list_elem elem;              /* List element for adding this struct
+                                           to a process' list of children. */
+    pid_t pid;                          /* pid of the child process. */
+    enum process_status status;         /* process status of the child. */
+    int exit_code;                      /* Exit code of process, only valid
+                                           if the process has already
+                                           run and terminated. */
+  };
+struct thread
+  {
+#ifdef USERPROG
+    /* Owned by userprog/process.c. */
+    struct thread *parent;              /* Parent thread. */
+    struct child_status *my_status;     /* Pointer to this thread's child_status
+                                           block in the parent thread. */                                        
+    struct list children;               /* Child processes of this thread. */
+    struct lock child_changed_lock;     /* Lock associated with the condition
+                                           variable below. */
+    struct condition child_changed;     /* Condition variable for signalling
+                                           that one of this thread's children
+                                           has changed status. */
+#endif
+  }
+
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a
 >> single process?
@@ -139,6 +218,10 @@ element of it's parent.
 
 >> B11: The default tid_t to pid_t mapping is the identity mapping.
 >> If you changed it, what advantages are there to your approach?
+
+We did not change this mapping. Since we knew each process always had
+exactly one thread and each process had a unique ID we thought it would be
+simplest to use that same ID as the tid_t.
 
       	     SURVEY QUESTIONS
 	     ================

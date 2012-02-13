@@ -127,6 +127,7 @@ struct thread
     int nice;                           /* Nice value for BSD scheduler */
     int64_t wakeup_time;                /* Time to wake up thread if asleep. */
 
+    int fileNumber;                     /* Next available fileID. */
     struct list priority_donations;     /* Sorted list (high-to-low) of all
                                            priorities donated to this thread. */
     struct lock *waiting_on;            /* Lock that the thread is waiting
