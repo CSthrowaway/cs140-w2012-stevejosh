@@ -1,4 +1,3 @@
-#include "userprog/process.h"
 #include <debug.h>
 #include <inttypes.h>
 #include <round.h>
@@ -7,6 +6,8 @@
 #include <string.h>
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
+#include "userprog/process.h"
+#include "userprog/syscall.h"
 #include "userprog/tss.h"
 #include "filesys/directory.h"
 #include "filesys/file.h"
@@ -121,8 +122,10 @@ process_execute (const char *file_name)
 
 /* Parses the argument string for a given command-line (given
    arg_string), and sets up the stack such that argc and argv are
-   ready to be accessed by the user program. */
-static void
+   ready to be accessed by the user program. Returns false if
+   the arguments are too big to fit on the stack, true if the
+   function succeeded. */
+static bool
 start_process_parse_args (char **esp_ptr, char *arg_string)
 {
   /* NOTE: this function recomputes file_name_length and strlen(arg_string) 
@@ -160,10 +163,15 @@ start_process_parse_args (char **esp_ptr, char *arg_string)
   /* Compute the amount of memory that will be required to store *all* of
      the contents of argv, including null-terminators. */
   int argv_memory = strlen (arg_string) - whitespace_size + args;
-
+  
   /* For performance reasons, round argv_memory up to the nearest multiple
      of a word so that argc and argv will be word-aligned. */ 
   argv_memory = ROUND_UP (argv_memory, sizeof(int));
+
+  int total_memory = argv_memory + sizeof(char*)*(args + 1) + sizeof(char**)
+                     + sizeof(int) + sizeof(void*);
+  if (total_memory >= PGSIZE)
+      return false;
   
   /* Subtract argv_memory from esp so that we can start setting up argv's
      data. */
@@ -221,6 +229,8 @@ start_process_parse_args (char **esp_ptr, char *arg_string)
      write a null pointer; this is the return address. */
   *esp_ptr -= sizeof(void*);
   *(void**)(*esp_ptr) = NULL;
+  
+  return true;
 
   /* TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
      Remove this bit before submitting! */
@@ -283,14 +293,6 @@ start_process (void *process_information_)
      block, as given in the process_information page. */
   thread_current ()->my_status = status_block;
 
-  /* If load failed, quit. */
-  if (!success)
-  {
-    process_change_status (PROCESS_FAILED);
-    palloc_free_page (process_information_);
-    thread_exit ();
-  }
-  
   /* Determine the length of the entire argument string
      as well as the length of the actual executable path.
      If there are arguments after the filename, restore
@@ -307,7 +309,21 @@ start_process (void *process_information_)
   /* Parse the arguments and set up the stack such that argc and
      argv are correctly-placed and reflective of the contents
      of the arguments in file_name. */
-  start_process_parse_args ((char**)&if_.esp, file_name);
+  if (success)
+    success = start_process_parse_args ((char**)&if_.esp, file_name);
+  
+  /* If load or argument parsing failed, quit. */
+  if (!success)
+  {
+    process_change_status (PROCESS_FAILED);
+    palloc_free_page (process_information_);
+    filesys_free_open_files (thread_current ());
+    thread_exit ();
+  }
+  
+  thread_current ()->executable = filesys_open (file_name);
+  file_deny_write (thread_current ()->executable);
+  
   palloc_free_page (process_information_);
   process_change_status (PROCESS_STARTED);
   
@@ -456,8 +472,13 @@ process_release (int exit_code)
       else
         s->status = PROCESS_ORPHANED;
     }
-  
+
+  /* Free all of the open files that were associated with this process. */  
   filesys_free_open_files (thread_current ());
+
+  /* Close the executable file and allow writing to it. */
+  file_allow_write (thread_current ()->executable);
+  file_close (thread_current ()->executable);
   
   lock_release (&process_death_lock);
 }
@@ -569,6 +590,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
   /* Open executable file. */
   file = filesys_open (file_name);
+
   if (file == NULL) 
     {
       printf ("load: %s: open failed\n", file_name);
