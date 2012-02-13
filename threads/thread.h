@@ -142,6 +142,8 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+    struct file *executable;            /* Loaded executable for this user
+                                           process. */
     struct thread *parent;              /* Parent thread. */
     struct child_status *my_status;     /* Pointer to this thread's child_status
                                            block in the parent thread. */                                        
