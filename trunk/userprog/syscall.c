@@ -21,20 +21,20 @@ static void syscall_handler (struct intr_frame *);
 
 static unsigned filesys_fdhash_func (const struct hash_elem *e,
                                      void *aux);
-static unsigned filesys_opencount_func (const struct hash_elem *e,
+static unsigned filesys_fileref_func (const struct hash_elem *e,
                                         void *aux);
 
 static bool filesys_fdhash_less (const struct hash_elem *a,
                                  const struct hash_elem *b,
                                  void *aux UNUSED);
-static bool filesys_opencount_less (const struct hash_elem *a,
+static bool filesys_fileref_less (const struct hash_elem *a,
                                     const struct hash_elem *b,
                                     void *aux UNUSED);
 
 static struct lock filesys_lock;    /* Lock for file system access. */
 static struct hash filesys_fdhash;  /* Hash table mapping fds to
                                        struct file*s. */
-static struct hash filesys_opencount; /* Hash table for counting number of
+static struct hash filesys_fileref; /* Hash table for counting number of
                                          open handles to a file and
                                          whether it's been marked to
                                          delete */
@@ -59,6 +59,11 @@ static uint8_t syscall_arg_count[] =
   1       /* Close */
 };
 
+/* An fd_elem encapsulates the information held by a file descriptor.
+   The fd_elem is inserted into the filesys_fdhash table upon creation
+   of the fd, and is used to keep track of file information. The fd_elem
+   is also attached to the creating thread's open_files list. This is
+   the central element for file resource tracking. */
 struct fd_elem
 {
   struct hash_elem h_elem;          /* Element hash table insertion. */
@@ -68,7 +73,7 @@ struct fd_elem
   struct file *file;                /* File system file handle. */
 };
 
-struct opencount_elem
+struct fileref_elem
 {
   struct hash_elem h_elem;          /* Element hash table insertion. */
   int inumber;                      /* inode number specifying the
@@ -78,7 +83,7 @@ struct opencount_elem
   bool delete;                      /* Whether the file has been marked
                                        for deleteion by a previous remove
                                        system call. */
-  char fileName[NAME_MAX];          /* Name of the file. */
+  char name[NAME_MAX];          /* Name of the file. */
 };
 
 void
@@ -89,9 +94,9 @@ syscall_init (void)
   hash_init (&filesys_fdhash,
              filesys_fdhash_func,
              filesys_fdhash_less, NULL);
-  hash_init (&filesys_opencount,
-             filesys_opencount_func,
-             filesys_opencount_less, NULL);
+  hash_init (&filesys_fileref,
+             filesys_fileref_func,
+             filesys_fileref_less, NULL);
   process_init ();
 }
 
@@ -103,11 +108,11 @@ filesys_fdhash_func (const struct hash_elem *e, void *aux UNUSED)
   return (unsigned)elem->fd;
 }
 
-/* Hash function for opencount_elems. */
+/* Hash function for fileref_elems. */
 static unsigned
-filesys_opencount_func (const struct hash_elem *e, void *aux UNUSED)
+filesys_fileref_func (const struct hash_elem *e, void *aux UNUSED)
 {
-  struct opencount_elem *elem = hash_entry(e, struct opencount_elem, h_elem);
+  struct fileref_elem *elem = hash_entry(e, struct fileref_elem, h_elem);
   return (unsigned)elem->inumber;
 }
 
@@ -124,12 +129,12 @@ filesys_fdhash_less (const struct hash_elem *a,
 
 /* Comparator for fd_elems. */
 static bool
-filesys_opencount_less (const struct hash_elem *a,
+filesys_fileref_less (const struct hash_elem *a,
                         const struct hash_elem *b,
                         void *aux UNUSED)
 {
-  struct opencount_elem *a_e = hash_entry (a, struct opencount_elem, h_elem);
-  struct opencount_elem *b_e = hash_entry (b, struct opencount_elem, h_elem);
+  struct fileref_elem *a_e = hash_entry (a, struct fileref_elem, h_elem);
+  struct fileref_elem *b_e = hash_entry (b, struct fileref_elem, h_elem);
   return (a_e->inumber < b_e->inumber);
 }
 
@@ -170,52 +175,63 @@ filesys_get_fdelem (int fd)
   return (thread_current ()->tid == fd_elem->owner_pid) ? fd_elem : NULL;
 }
 
-/* Returns the opencount_elem (stored in the global opencount hash table)
+/* Returns the fileref_elem (stored in the global fileref hash table)
    associated with the given inode*. Returns NULL if not found. */
-static struct opencount_elem*
-filesys_get_opencount_from_inode (struct inode* i)
+static struct fileref_elem*
+filesys_get_fileref_from_inode (struct inode* i)
 {
-  struct opencount_elem search;
+  struct fileref_elem search;
   search.inumber = inode_get_inumber (i);
 
   struct hash_elem *found;
-  found = hash_find (&filesys_opencount, &search.h_elem);
+  found = hash_find (&filesys_fileref, &search.h_elem);
 
   if (found == NULL)
     return NULL;
 
-  struct opencount_elem *opencount_hash_entry =
-    hash_entry (found, struct opencount_elem, h_elem);
-  return opencount_hash_entry;
+  struct fileref_elem *fileref_hash_entry =
+    hash_entry (found, struct fileref_elem, h_elem);
+  return fileref_hash_entry;
 }
 
-/* Returns the opencount_elem (stored in the global opencount hash table)
+/* Returns the fileref_elem (stored in the global fileref hash table)
    associated with the given file*. Returns NULL if not found. */
-static struct opencount_elem*
-filesys_get_opencount (struct file* f)
+static struct fileref_elem*
+filesys_get_fileref (struct file* f)
 {
-  return filesys_get_opencount_from_inode (file_get_inode (f));
+  return filesys_get_fileref_from_inode (file_get_inode (f));
 }
 
-/* Decrements opencount for given file. If it is marked for deletion and
-   there are no more remaining open files then the file is
-   deleted. Regardless, if there are no more open files the entry is
-   removed from the hash table and the opencount_elem memory is freed*/
+/* Closes the given file. In doing so, properly decrements the global
+   reference count associated with the file, removing it if necessary. */
 static void
-filesys_decrement_opencount(struct file* f)
+filesys_close_file (struct file* f)
 {
-  struct opencount_elem* opencount = filesys_get_opencount(f);
-  ASSERT(opencount != NULL);
-  opencount->count--;
-  if (opencount->count == 0)
+  struct fileref_elem* fileref = filesys_get_fileref(f);
+  ASSERT(fileref != NULL);
+  fileref->count--;
+
+  /* If we hold the last reference to this file, then we are responsible
+     for cleaning up the reference as well as removing the file if
+     necessary. */
+  if (fileref->count == 0)
     {
-      hash_delete (&filesys_opencount, &opencount->h_elem);
-      if (opencount->delete)
-	{
-	  filesys_remove (opencount->fileName);
-	}
-      free (opencount);
+      hash_delete (&filesys_fileref, &fileref->h_elem);
+
+      /* If the file reference indicates that the file must be deleted,
+         then we must do so, using the filename stored in the reference.
+         Otherwise, we just close the file as normal. */
+      if (fileref->delete)
+        filesys_remove (fileref->name);
+      else
+        file_close (f);
+      free (fileref);
     }
+    
+  /* If others are still holding references to this file, we don't have
+     to worry about removing the reference; we just close the file. */
+  else
+    file_close (f);
 }
 
 /* Frees the resources associated with the given file descriptor
@@ -225,7 +241,7 @@ filesys_decrement_opencount(struct file* f)
 static void
 filesys_free_fdelem (struct fd_elem *elem)
 {
-  file_close (elem->file);
+  filesys_close_file (elem->file);
   hash_delete (&filesys_fdhash, &elem->h_elem);
   list_remove (&elem->l_elem);
   free (elem);
@@ -251,7 +267,6 @@ filesys_free_open_files (struct thread *t)
          host memory. */
       struct list_elem *next = list_next (e);
       struct fd_elem *fd_elem = list_entry (e, struct fd_elem, l_elem);
-      filesys_decrement_opencount (fd_elem->file);
       filesys_free_fdelem (fd_elem);
       e = next;
     }
@@ -401,23 +416,23 @@ syscall_remove (const char *file)
   lock_filesys ();
 
   bool success;
-  struct opencount_elem* opencount;
+  struct fileref_elem* fileref;
 
   /* Make sure the file exists. */
   if (dir_lookup (dir_open_root (), file, &inode))
     {
-      /* Retrieve the opencount entry for this file. If the file is
+      /* Retrieve the fileref entry for this file. If the file is
          currently opened by other processes, we must mark it for
          deletion. Otherwise, we can go ahead and delete it. */
-      opencount = filesys_get_opencount_from_inode(inode);
-      if (opencount->count == 0)
+      fileref = filesys_get_fileref_from_inode(inode);
+      if (fileref->count == 0)
         {
-          hash_delete (&filesys_opencount, &opencount->h_elem);
+          hash_delete (&filesys_fileref, &fileref->h_elem);
           success = filesys_remove (file);
-          free (opencount);
+          free (fileref);
         }
       else
-          opencount->delete = true;
+          fileref->delete = true;
       success = true;
     }
   else
@@ -449,27 +464,46 @@ syscall_open (const char *file)
     }
 
   struct fd_elem *newhash = malloc (sizeof(struct fd_elem));
+
+  /* If malloc failed, we need to clean up and return an error code. */
+  if (newhash == NULL)
+    {
+      file_close (handle);
+      unlock_filesys ();
+      return -1;
+    }
+  
+  struct fileref_elem* fileref = filesys_get_fileref(handle);
+
+  if (fileref == NULL)
+    {
+      fileref = malloc (sizeof (struct fileref_elem));
+
+      /* If malloc failed, clean up and return an error code. */
+      if (fileref == NULL)
+        {
+          free (newhash);
+          file_close (handle);
+          unlock_filesys ();
+          return -1;
+        }
+      
+      fileref->inumber = inode_get_inumber (file_get_inode (handle));
+      fileref->count = 1;
+      fileref->delete = false;
+      strlcpy (fileref->name, file, NAME_MAX);
+      hash_insert (&filesys_fileref, &fileref->h_elem);
+    }
+  else
+      fileref->count++;
+
+  /* Initialize and insert the fd only after we know that the fileref
+     operations have succeeded. */
   newhash->fd = allocate_fd ();
   newhash->file = handle;
   newhash->owner_pid = thread_current ()->tid;
-
   hash_insert (&filesys_fdhash, &newhash->h_elem);
   list_push_back (&thread_current ()->open_files, &newhash->l_elem);
-  
-  // reference counting for open file references
-  struct opencount_elem* opencount = filesys_get_opencount(handle);
-  // add new entry if file has not been opened before
-  if (opencount == NULL)
-    {
-      opencount = malloc (sizeof (struct opencount_elem));
-      opencount->inumber = inode_get_inumber (file_get_inode (handle));
-      opencount->count = 1;
-      opencount->delete = false;
-      strlcpy (opencount->fileName, file, NAME_MAX);
-      hash_insert (&filesys_opencount, &opencount->h_elem);
-    }
-  else
-      opencount->count++;
 
   unlock_filesys ();
   return newhash->fd;
@@ -510,7 +544,6 @@ syscall_read (int fd, void *buffer, unsigned size)
           unlock_filesys ();
           return -1;
         }
-      //printf ("Reading %d bytes from 0x%x\n", size, handle);
       off_t bytes_read = file_read (handle, buffer, size);
       unlock_filesys ();
       return bytes_read;
@@ -530,9 +563,6 @@ syscall_write (int fd, const void *buffer, unsigned size)
 
   if (fd == STDOUT_FILENO)
     {
-      /* TODO : Make this safe by checking the buffer bounds. Currently,
-         this is NOT safe. The user program could cause us to overrun
-         the bounds of valid virtual memory. */
       putbuf (buffer, size);
       return size;
     }
@@ -545,7 +575,6 @@ syscall_write (int fd, const void *buffer, unsigned size)
           unlock_filesys ();
           return -1;
         }
-      //printf ("Writing 0x%x\n", handle);
       off_t bytes_written = file_write (handle, buffer, size);
       unlock_filesys ();
       return bytes_written;
@@ -585,10 +614,7 @@ syscall_close (int fd)
   lock_filesys ();
   struct fd_elem *elem = filesys_get_fdelem (fd);
   if (elem != NULL)
-    {
-      filesys_decrement_opencount (elem->file);
-      filesys_free_fdelem (elem);
-    }
+    filesys_free_fdelem (elem);
   unlock_filesys ();
 }
 

@@ -73,6 +73,14 @@ process_execute (const char *file_name)
      initialize it to indicate that the process has not yet attempted to
      load, then add it to the list of child process status blocks. */
   struct child_status *child_status = malloc(sizeof(struct child_status));
+  
+  /* Check that malloc succeeded. */
+  if (child_status == NULL)
+    {
+      palloc_free_page (process_information);
+      return TID_ERROR;
+    }
+
   child_status->status = PROCESS_STARTING;
   list_push_back (&thread_current ()->children, &child_status->elem);
 
@@ -367,7 +375,6 @@ int
 process_wait (tid_t child_tid)
 {
   lock_acquire (&thread_current ()->child_changed_lock);
-  //printf ("%s is about to wait on %d.\n", thread_current()->name, child_tid);
   
   struct child_status *status_block = get_child_status_block (child_tid);
 
@@ -380,7 +387,7 @@ process_wait (tid_t child_tid)
     }
   
   /* Wait until the process exits the PROCESS_STARTED status (meaning
-     that the process has finished. */  
+     that the process has finished.) */  
   while (status_block->status == PROCESS_STARTED)
     {
       cond_wait (&thread_current ()->child_changed,
@@ -389,7 +396,6 @@ process_wait (tid_t child_tid)
                 need to call get_child_status_block more than once. */
     }
 
-  //printf ("Finished waiting! Status is %d, code is %d.\n", status_block->status, status_block->exit_code);
   int exit_code = status_block->exit_code;
 
   /* Remove the child's status block and free the memory, since we
@@ -435,15 +441,12 @@ process_release (int exit_code)
 {
   lock_acquire (&process_death_lock);
   printf("%s: exit(%d)\n", thread_current ()->name, exit_code); 
-  //printf ("Process %s is about to die with code %d.\n", thread_current ()->name, exit_code);
  
   /* Check to see if I've been orphaned. If so, I'm responsible
      for cleaning up my child status block, since my parent no
      longer owns it. */
   if (thread_current ()->my_status->status == PROCESS_ORPHANED)
-    {
-      free (thread_current ()->my_status);
-    }
+    free (thread_current ()->my_status);
     
   /* Otherwise, update my status block to indicate my exit code,
      and inform my parent that my status has changed. */
