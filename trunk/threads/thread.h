@@ -19,7 +19,6 @@ enum thread_status
    (Owned by userprog/process.c) */
 enum process_status
   {
-    PROCESS_INVALID,    /* Process does not exit. */
     PROCESS_STARTING,   /* Process has not yet started. */
     PROCESS_STARTED,    /* Process has successfully loaded. */
     PROCESS_FAILED,     /* Process failed to load. */

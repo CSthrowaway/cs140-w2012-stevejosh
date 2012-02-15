@@ -17,12 +17,16 @@
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
 
+/* Split calls to putbuf up into chunks of PUTBUF_BLOCK_SIZE
+   bytes each. */
+#define PUTBUF_BLOCK_SIZE 128
+
 static void syscall_handler (struct intr_frame *);
 
 static unsigned filesys_fdhash_func (const struct hash_elem *e,
                                      void *aux);
 static unsigned filesys_fileref_func (const struct hash_elem *e,
-                                        void *aux);
+                                      void *aux);
 
 static bool filesys_fdhash_less (const struct hash_elem *a,
                                  const struct hash_elem *b,
@@ -35,9 +39,9 @@ static struct lock filesys_lock;    /* Lock for file system access. */
 static struct hash filesys_fdhash;  /* Hash table mapping fds to
                                        struct file*s. */
 static struct hash filesys_fileref; /* Hash table for counting number of
-                                         open handles to a file and
-                                         whether it's been marked to
-                                         delete */
+                                       open handles to a file and
+                                       whether it's been marked for
+                                       deletion. */
 
 /* Gives the number of arguments expected for a given system
    call number. Useful to unify the argument-parsing code in
@@ -73,6 +77,10 @@ struct fd_elem
   struct file *file;                /* File system file handle. */
 };
 
+/* A fileref_elem encapsulates information about a particular file's
+   reference count - that is, how many outstanding FDs reference
+   the file. It also indicates whether the file is marked for deletion
+   or not. */
 struct fileref_elem
 {
   struct hash_elem h_elem;          /* Element hash table insertion. */
@@ -83,7 +91,7 @@ struct fileref_elem
   bool delete;                      /* Whether the file has been marked
                                        for deleteion by a previous remove
                                        system call. */
-  char name[NAME_MAX];          /* Name of the file. */
+  char name[NAME_MAX + 1];          /* Name of the file. */
 };
 
 void
@@ -318,12 +326,33 @@ validate_str (const char *vstr, int max_length)
    buffer is valid, returns the physical address of the buffer. Otherwise,
    returns NULL. */
 static const void*
-validate_buffer (const void *buffer, int size)
+validate_buffer (const char *buffer, unsigned size)
 {
-  const void *begin = translate_vaddr(buffer);
-  const void *end = translate_vaddr((const char*)buffer + size - 1);
-  
-  return (begin != NULL && end != NULL) ? begin : NULL;
+  if (size == 0) return buffer;
+
+  /* Try to translate the first address of the buffer. If this fails, we
+     know it's a bad buffer. */
+  const char *pos = translate_vaddr(buffer);
+  if (pos == NULL) return NULL;
+
+  const char *next = buffer;
+
+  /* Now, check that every page between the beginning and the end of the
+     buffer is actually mapped into memory. Otherwise, a clever user could
+     potentially make us crash by giving us a buffer that appears to exist
+     at both ends but has gaps in it (e.g., take an address in the code
+     segment and add a size that reaches up to the stack...) */
+  unsigned i;
+  for (i = 0; i < size; i += PGSIZE)
+    {
+      unsigned offset = (size - i - 1);
+      next += (offset < PGSIZE) ? offset : PGSIZE;
+      if (translate_vaddr (next) == NULL) return NULL;      
+    }
+
+  /* Looks like the whole buffer exists, so we can return the trnaslated
+     beginning pointer. */
+  return pos;
 }
 
 /* -- System Call #0 --
@@ -344,6 +373,9 @@ syscall_exit (int code)
   thread_exit ();
 }
 
+/* Returns true if the given (user-space) string is a valid filename, and
+   false if it is not. Kills the process if the string is found to contain
+   invalid memory. */
 static bool
 is_valid_filename (const char* file)
 {
@@ -475,6 +507,9 @@ syscall_open (const char *file)
   
   struct fileref_elem* fileref = filesys_get_fileref(handle);
 
+  /* If the file doesn't already exist in the reference table, then we must
+     create a new reference count for it and set the count to 1. Otherwise,
+     we simply increment the existing reference count. */
   if (fileref == NULL)
     {
       fileref = malloc (sizeof (struct fileref_elem));
@@ -491,11 +526,11 @@ syscall_open (const char *file)
       fileref->inumber = inode_get_inumber (file_get_inode (handle));
       fileref->count = 1;
       fileref->delete = false;
-      strlcpy (fileref->name, file, NAME_MAX);
+      strlcpy (fileref->name, file, NAME_MAX + 1);
       hash_insert (&filesys_fileref, &fileref->h_elem);
     }
   else
-      fileref->count++;
+    fileref->count++;
 
   /* Initialize and insert the fd only after we know that the fileref
      operations have succeeded. */
@@ -509,7 +544,9 @@ syscall_open (const char *file)
   return newhash->fd;
 }
 
-/* -- System Call #7 -- */
+/* -- System Call #7 --
+   Returns the size of the file associated with the given fd, or -1
+   if the fd does not exist for the given process. */
 static int
 syscall_filesize (int fd)
 {
@@ -528,6 +565,8 @@ syscall_read (int fd, void *buffer, unsigned size)
   if (cbuffer == NULL)
     syscall_exit (-1);
 
+  /* If fd is STDIN_FILENO, then we read from the console. Otherwise,
+     read from the file corresponding to the given fd. */
   if (fd == STDIN_FILENO)
     {
       unsigned i;
@@ -561,9 +600,18 @@ syscall_write (int fd, const void *buffer, unsigned size)
   if (buffer == NULL)
     syscall_exit (-1);
 
+  /* If fd is STDOUT_FILENO, then we write to the console in fixed-size
+     blocks. Otherwise, read from the file corresponding to the given fd. */
   if (fd == STDOUT_FILENO)
     {
-      putbuf (buffer, size);
+      unsigned left_to_write = size;
+      while (left_to_write > PUTBUF_BLOCK_SIZE)
+        {
+          putbuf (buffer, PUTBUF_BLOCK_SIZE);
+          buffer = (const char*)buffer + PUTBUF_BLOCK_SIZE;
+          left_to_write -= PUTBUF_BLOCK_SIZE;
+        }
+      putbuf (buffer, left_to_write);
       return size;
     }
   else
@@ -618,41 +666,22 @@ syscall_close (int fd)
   unlock_filesys ();
 }
 
-#if 0
-#define D(x) x
-#else
-#define D(x)
-#endif
-
 static void
 syscall_handler (struct intr_frame *f)
 {
-  D(printf ("\nSystem Call:\n"));
-  D(printf ("\tMy Parent is: 0x%x\n", thread_current ()->parent));
-  D(printf ("\tMy Parent is: %s\n", thread_current ()->parent->name));
-  if (intr_get_level () == INTR_OFF)
-    {D(printf ("\tInterrupts are OFF\n"));}
-  else
-    {D(printf ("\tInterrupts are ON\n"));}
-  D(printf ("\tesp vaddr: 0x%x\n", f->esp));
-  
   /* Attempt to translate the stack pointer to a physical address. */
   const void* esp = translate_vaddr(f->esp);
-  if (esp == NULL)  goto kill;
+  if (esp == NULL)  goto abort;
   
-  D(printf ("\tesp paddr: 0x%x\n", esp));
-
   /* Read the system call number. */
-  uint32_t syscall_number = *(int*)esp;
-  D(printf ("\tcall number: %d\n", syscall_number));
+  uint8_t syscall_number = *(uint8_t*)esp;
 
   /* Verify that the system call number is in bounds of what we
      are expecting. */
-  if (syscall_number >= sizeof(syscall_arg_count)) goto kill;
+  if (syscall_number >= sizeof(syscall_arg_count)) goto abort;
 
   /* Lookup the expected number of arguments that the system call takes. */
   uint8_t args = syscall_arg_count[syscall_number];
-  D(printf ("\targuments: %d\n", args));
 
   /* Try to read the proper number of arguments off of the caller's stack.
      At each point along the way, we validate the pointer to the argument. */
@@ -660,11 +689,11 @@ syscall_handler (struct intr_frame *f)
   int i;
   for (i = 0; i < args; ++i)
     {
-      // TODO : Make sure this address is valid!
-      const uint32_t *arg_address = translate_vaddr ((uint32_t*)f->esp + i + 1);
-      if (arg_address == NULL) goto kill;
-      arg[i] = *arg_address;
-      D(printf ("\t\t[%d]: %d (0x%x)\n", i, arg[i], arg[i]));
+      const uint32_t *arg_address = (const uint32_t*)f->esp + i + 1;
+      const uint32_t *phys_address = validate_buffer((const char*)arg_address,
+                                                     sizeof(uint32_t));
+      if (phys_address == NULL) goto abort;
+      arg[i] = *phys_address;
     }
 
   bool ret = false;
@@ -730,8 +759,7 @@ syscall_handler (struct intr_frame *f)
     f->eax = ret_val;
   return;
 
-kill:
-  D(printf ("Something went wrong, I'm killing this process.\n"));
+abort:
   syscall_exit (-1);
   return;
 }
