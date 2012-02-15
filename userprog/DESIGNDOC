@@ -29,16 +29,18 @@ Steve Lesser <sklesser@stanford.edu>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+No changes required for argument passing.
+
 ---- ALGORITHMS ----
 
 >> A2: Briefly describe how you implemented argument parsing.  How do
 >> you arrange for the elements of argv[] to be in the right order?
 >> How do you avoid overflowing the stack page?
 
-Originally, process_execute allocated a page of memory and copied
-the filename to that page to pass it to the newly-executed process.
-We use the same page to pass the arguments to the new process. In
-start_process, we call start_process_parse_args, which sets up the
+In the original system, process_execute allocated a page of memory
+and copied the filename to that page to pass it to the newly-executed
+process. We use the same page to pass the arguments to the new process.
+In start_process, we call start_process_parse_args, which sets up the
 stack.
 
 start_process_parse_args works by making an initial pass over the
@@ -55,18 +57,55 @@ function copies all of the string data onto the stack in order
 of appearance, while simultaneously wiring up the argv pointers
 to the string data that is being written. This is only possible
 because we pre-computed the memory requirements, so we know
-exactly where everything should be on the stack.
+exactly where everything should be on the stack. Furthermore, we
+can process the arguments in-order such that argv reflects the
+expected order.
+
+Note that we do the actual argument parsing in start_process, not
+process_execute.
 
 ---- RATIONALE ----
 
 >> A3: Why does Pintos implement strtok_r() but not strtok()?
 
-strtok is a poorly-thought-out function in the C library. The
-primary concern is that it uses global data to TODO.
+The C-standard strtok makes use of a static pointer to keep track of
+its location within the string that it is currently parsing. This is
+a terrible approach, because it yields undefined and potentially
+disastrous behavior if a parent function is in the middle of running
+strtok when it calls a child function. If the child function uses
+strtok, the parent's strtok will lose track of the pointer and will
+yield unwanted results.
+
+If strtok is to be used safely, we have to know with certainty that
+anything we call while using strtok will not also try to use strtok.
+This is a terrible limitation and danger. In any reasonable system,
+we would expect to have to keep track of our own position pointer
+rather than letting a static pointer do so, which is precisely what
+strtok_r does. strtok_r is safe to use even if calls to other functions
+are made during use, since we are responsible for keeping track of
+the memory used to store the position pointer, hence, strtok_r is
+reentrant, unlike strtok.
 
 >> A4: In Pintos, the kernel separates commands into a executable name
 >> and arguments.  In Unix-like systems, the shell does this
 >> separation.  Identify at least two advantages of the Unix approach.
+
+First, the Unix approach is safer. Having the Kernel do less work means
+less opportunity to make a mistake that could potentially lead to a
+bug or, worse, a security vulnerability in the host machine. Having a
+process such as the shell do this work is safer: assuming the OS has
+measures in place to make user processes "safe," then it need not worry
+about vulnerabilities in argument passing, since this will be done by
+the shell.
+
+Second, the Unix approach is flexible - different shells can choose to
+interpret and parse arguments in different ways, which could be useful
+depending on how the user wishes to communicate with programs, or, more
+importantly, how programs wish to communicate with one another. Having
+the kernel perform this separation would lead to either more code
+paths in the kernel to support different argument-passing methods (bad
+idea, more code in kernel -> more security vulnerabilities), or no
+ability to support other argument-passing schemes (inflexible).
 
    			      SYSTEM CALLS
 			      ============
@@ -79,9 +118,17 @@ primary concern is that it uses global data to TODO.
 
 ------------ In syscall.c ---------------
 
+/* Split calls to putbuf up into chunks of PUTBUF_BLOCK_SIZE
+   bytes each. */
+#define PUTBUF_BLOCK_SIZE 128
+
 static struct lock filesys_lock;    /* Lock for file system access. */
 static struct hash filesys_fdhash;  /* Hash table mapping fds to
                                        struct file*s. */
+static struct hash filesys_fileref; /* Hash table for counting number of
+                                       open handles to a file and
+                                       whether it's been marked for
+                                       deletion. */
 
 /* Gives the number of arguments expected for a given system
    call number. Useful to unify the argument-parsing code in
@@ -103,67 +150,82 @@ static uint8_t syscall_arg_count[] =
   1       /* Close */
 };
 
-
-struct fdhash_elem
+/* An fd_elem encapsulates the information held by a file descriptor.
+   The fd_elem is inserted into the filesys_fdhash table upon creation
+   of the fd, and is used to keep track of file information. The fd_elem
+   is also attached to the creating thread's open_files list. This is
+   the central element for file resource tracking. */
+struct fd_elem
 {
-  struct hash_elem elem;
-  int fd;
-  struct file *file;
+  struct hash_elem h_elem;          /* Element hash table insertion. */
+  struct list_elem l_elem;          /* Element for list insertion. */
+  int fd;                           /* Associated fd number. */
+  int owner_pid;                    /* pid of the owning process. */
+  struct file *file;                /* File system file handle. */
 };
+
+/* A fileref_elem encapsulates information about a particular file's
+   reference count - that is, how many outstanding FDs reference
+   the file. It also indicates whether the file is marked for deletion
+   or not. */
+struct fileref_elem
+{
+  struct hash_elem h_elem;          /* Element hash table insertion. */
+  int inumber;                      /* inode number specifying the
+                                       file. */
+  int count;                        /* Number of existing references to
+                                       this file. */
+  bool delete;                      /* Whether the file has been marked
+                                       for deleteion by a previous remove
+                                       system call. */
+  char name[NAME_MAX + 1];          /* Name of the file. */
+};
+
+in allocate_fd:
+  static int fd_current = 2;        /* Keeps track of the next unique fd
+                                       number to be given out. */
 
 ------------ In thread.h -----------------
 
-/* States in a process' life cycle. 
-   (Owned by userprog/process.c) */
-enum process_status
-  {
-    PROCESS_INVALID,    /* Process does not exit. */
-    PROCESS_STARTING,   /* Process has not yet started. */
-    PROCESS_STARTED,    /* Process has successfully loaded. */
-    PROCESS_FAILED,     /* Process failed to load. */
-    PROCESS_DONE,       /* Process has terminated. */
-    PROCESS_ORPHANED    /* The process' parent has died, so the process
-                           must no longer try to report status changes
-                           to the parent. */
-  };
-
-typedef int pid_t;
-
-/* Owned by userprog/process.c. */
-struct child_status
-  {
-    struct list_elem elem;              /* List element for adding this struct
-                                           to a process' list of children. */
-    pid_t pid;                          /* pid of the child process. */
-    enum process_status status;         /* process status of the child. */
-    int exit_code;                      /* Exit code of process, only valid
-                                           if the process has already
-                                           run and terminated. */
-  };
-struct thread
-  {
-#ifdef USERPROG
-    /* Owned by userprog/process.c. */
-    struct thread *parent;              /* Parent thread. */
-    struct child_status *my_status;     /* Pointer to this thread's child_status
-                                           block in the parent thread. */                                        
-    struct list children;               /* Child processes of this thread. */
-    struct lock child_changed_lock;     /* Lock associated with the condition
-                                           variable below. */
-    struct condition child_changed;     /* Condition variable for signalling
-                                           that one of this thread's children
-                                           has changed status. */
-#endif
-  }
+TODO
 
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a
 >> single process?
 
+File descriptors are associated with open files via a hash table that
+is static to syscall.c. The hash table entries contain FD numbers,
+information about the corresponding file, as well as the process to
+which the file belongs.
+
+File descriptors are unique within the entire OS, since the hash table
+described above is static to syscall.c. FD numbers are allocated by
+a static function in syscall.c that contains a static variable indicating
+the next FD number to give out.
+
 ---- ALGORITHMS ----
 
 >> B3: Describe your code for reading and writing user data from the
 >> kernel.
+
+We chose to make the reading/writing of user data in the kernel as
+conceptually simple as possible. First, we made a function
+translate_vaddr, which attempts to translate a virtual address into
+a physical address, returning NULL if the virtual address isn't in
+user space or isn't mapped to a physical address. For a single-byte
+element such as the system call number, this suffices to ensure that
+we can read the user data (since we have validated that byte).
+
+For multi-byte buffers, we simply call translate_vaddr on the first
+and last bytes of the buffer, as well as every intermediate page that
+the buffer spans. We do so in order to ensure that the entire buffer
+is mapped into physical memory, not just the first and last pages of
+it.
+
+For null-terminated strings, we march along the string, validating
+each address then reading the byte at the address, until we find
+the null-terminator, find unmapped memory, or exceed a length limit
+that is passed into the validation function.
 
 >> B4: Suppose a system call causes a full page (4,096 bytes) of data
 >> to be copied from user space into the kernel.  What is the least
@@ -172,63 +234,37 @@ struct thread
 >> for a system call that only copies 2 bytes of data?  Is there room
 >> for improvement in these numbers, and how much?
 
-The number of inspections depends on the type of data that is being
-read. For a void* buffer (read/write), 2 inspections will always occur.
-For a char* buffer, a maximum of NAME_MAX inspections will occur if
-the string is associated with a file operator, but PGSIZE inspections
-will occur if the string is associated with exec.
 
-If the system call only copies 2 bytes of data, 2 inspections will
-still occur for a void* buffer, and 2 inspections will occur for a
-char* buffer.
-
-There is some room for improvement in the number for char*s. Currently,
-our scheme for validating null-terminated strings is very simple:
-march along the string until a null-terminator is found, validating
-each byte along the way. We could have done something fancier here by
-recognizing that the address only needs to be validated if it lies on
-a page boundary. We chose the simple route, however, since it would
-be rather uncommon for huge strings to be passed to exec. Furthermore,
-file-related strings are only validated up to a maximum of NAME_MAX
-characters, so the performance loss for them is negligible. Overall,
-we feel that the slight performance tradeoff is worth the simplicity
-and safety of our implementation.
-
-There is, of course, no room for improvement with fixed-size buffers:
-we simply validate the head and the tail of the buffer.
 
 >> B5: Briefly describe your implementation of the "wait" system call
 >> and how it interacts with process termination.
 
-Our implementation of wait involves adding to the thread struct a
-condition variable and lock, a list of
-dynamically allocated process_child_status structures, a parent
-pointer to the process parent, and a process_child_status pointer directly
-to the to the parent's list element of the current process. 
+Our "wait" implementation hinges on the addition of a list to the thread
+structure that keeps track of "child status" blocks. For every child
+process that a parent process creates, it also creates a new element in
+its list of children that contains information about the child,
+including pid, exit code, and running status. The child also receives a
+pointer (again, added in the thread struct) to its corresponding status
+block. That is, every child process has a pointer to an element in its
+parent's list of child statuses.
 
-The condition variable and lock allows for signalling between a child and 
-a parent so a parent does not have to busy wait on a child in the wait 
-function. The process_child_status structures
-are used to store persistent information about a child to the parent that
-created it. This information includes a process ID of the child process, a
-process_status enum for specifying the state of the child process
-(starting, started, failed, done), the return value of the child process
-(only valid when process_status is failed or done) and a struct list_elem to
-enable the structure to be included in the child list of it's creator. The
-additional process_child_status pointer allows a thread to have direct
-access to it's parents list element of the process_child_status
-corresponding to the current child process. We added this for optimization reasons so there
-were not unnecessary traversals through lists of child processes when a
-thread wanted to update information about it's own process_child_status.
+Now, when a child changes status, it notifies its parent simply by
+acquiring a lock associated with the parent's child status list, and then
+changing its status block to reflect its new status. This includes failure
+to load executable as well as exit code information when the process
+terminates. The process also signals a condition variable in the parent.
 
-Upon process termination, a global process_dying lock is acquired to avoid
-race conditions of competing process terminations then the process's
-personal process_child_status is updated to reflect the final exit code
-and process_status. The terminating process is then free to signal it's
-parent's lock to release potential waits. The thread can now remove itself as usual
-since it's exit status is safe in the persistent process_child_status
-element of it's parent.
+Then, when a parent wishes to "wait" on one of its children, it simply
+searches for the pid of the child in its child status list. If it is able
+to find the status block, then it can tell whether the child is dead or
+running. If the child is dead, it returns the exit code and removes that
+child's block from the list. If the child is still alive, the parent
+waits on the same condition variable inside of itself that the child will
+signal when it changes status. In this way, the parent can wait on its
+children to change status without having to busy wait.
 
+Note that, when parents die before their children, the children are changed
+to "orphaned" status, so that they know not to try to access their parent.
 
 >> B6: Any access to user program memory at a user-specified address
 >> can fail due to a bad pointer value.  Such accesses must cause the
@@ -244,12 +280,91 @@ element of it's parent.
 >> paragraphs, describe the strategy or strategies you adopted for
 >> managing these issues.  Give an example.
 
+Since we chose to go with the pre-validation strategy, rather than
+letting the page-fault mechanism protect us from bad memory access,
+our code is relatively un-obscured by such error-handling.
+
+Moreover, we implemented syscall_handler in such a way that virtually
+all of the redundant error-checking is handled by this function, rather
+than the individual system call functions. By the time a system call is
+dispatched to the appropriate sub-handler (syscall_exit, syscall_write,
+etc), all arguments have already been verified. We achieve this by using
+the static array syscall_arg_count, as detailed above.
+
+From this point on, the only checks required are string/buffer checks.
+The system call functions can perform these *immediately* upon receiving
+the request, which means resource freeing is easy: just don't acquire
+any resources until all necessary buffers have been verified! This makes
+it quite simple, conceptually, to design system calls and handle errors,
+since we have eliminated the possibility of "failing at any point."
+
+For example, observe our code for syscall_read:
+
+syscall_read (int fd, void *buffer, unsigned size)
+{
+  char *cbuffer = (char*)validate_buffer (buffer, size);
+  if (cbuffer == NULL)
+    syscall_exit (-1);
+
+  if (fd == STDIN_FILENO)
+    {
+      unsigned i;
+      for (i = 0; i < size; ++i)
+        *(cbuffer++) = input_getc ();
+      return size;
+    }
+  else
+    {
+      lock_filesys ();
+      struct file *handle = filesys_get_file (fd);
+      if (handle == NULL)
+        {
+          unlock_filesys ();
+          return -1;
+        }
+      off_t bytes_read = file_read (handle, buffer, size);
+      unlock_filesys ();
+      return bytes_read;
+    }
+}
+
+Note that only two error checks occur in this (relatively complex) function:
+first, the output buffer is validated. If this validation fails, then we can
+immediately kill the process (note that we have NOT acquired any resources,
+and that syscall_exit will take care of all the usual per-process resources).
+Then, the only other check we must make is that the fd maps to a valid file
+(if it is not STDIN_FILENO). If we find that the fd is invalid, all we must
+do is release the filesystem lock and report an error.
+
+By having syscall_handler automatically perform argument validation, as well
+as by checking buffers for validity *before* executing the function, we are
+able to avoid loads of error-handling code. This implementation of the read
+syscall is easy to understand and quite transparent.
+
 ---- SYNCHRONIZATION ----
 
 >> B7: The "exec" system call returns -1 if loading the new executable
 >> fails, so it cannot return before the new executable has completed
 >> loading.  How does your code ensure this?  How is the load
 >> success/failure status passed back to the thread that calls "exec"?
+
+We modified process_execute to wait until it knows whether the process
+has loaded or failed to load, then process_execute simply passes this
+knowledge back to exec.
+
+To do so, we re-used the child status blocks described earlier. When a
+child process fails to load its executable, it sets its status block
+to "failed" and signals the parent process. Similarly, if the process
+succeeds at loading, it sets its status to "started" and signals the
+parent process. Thus, a parent process must simply wait on its internal
+condition variable and, when signalled, check the status of the child it
+just created. It will continue to do so until it detects that the child
+has either started or failed, at which point it will return the process'
+tid (if successful), or TID_ERROR if unsuccessful. Again, exec simply
+wraps this functionality.
+
+We saw no reason for the system call exec and process_exec to operate
+in different manners, hence our implementation inside of process_exec.
 
 >> B8: Consider parent process P with child process C.  How do you
 >> ensure proper synchronization and avoid race conditions when P
@@ -263,8 +378,38 @@ element of it's parent.
 >> B9: Why did you choose to implement access to user memory from the
 >> kernel in the way that you did?
 
+Our design for user memory access is simple and concise. This allows
+for great readability and strong security. We chose to validate user
+memory access rather than use the page-fault mechanism because of ease
+with which it allows to write system call functions. For many of our
+functions, we need only validate the user memory once, then proceed
+with acquiring resources/carrying out the system call. In this sense,
+we isolate the steps of validating the user memory and performing the
+memory operation. If we had chosen to use the faulting mechanism, this
+isolation would not be possible.
+
+We took extra care in making our validation methods for strings and
+buffers strong, so that the Kernel is protected from malicious users.
+
 >> B10: What advantages or disadvantages can you see to your design
 >> for file descriptors?
+
+The advantage of our design lies primarily in the lack of bulky per-
+process data for file descriptors. Each process keeps track of a
+simple linked list of FDs, but the bulk of the data is stored
+statically in syscall.c. This is a good thing when the system has
+many processes, since thread structures are still quite lightweight.
+The fact that FDs are unique accross all processes also means that
+the mapping from FD to file* is conceptually simple and easy-to-
+implement.
+
+On the other hand, since we use global data to keep track of the fds,
+the system may incur some latency if many process have lots of open
+fds. In this case, the global fd hash table will become large and
+lookup times will increase. However, file access already requires a
+coarse lock, since the filesystem is not thread-safe, so indexing
+into a global structure shouldn't be that expensive in comparison to
+the (necessary) step of acquiring a global lock for each file op.
 
 >> B11: The default tid_t to pid_t mapping is the identity mapping.
 >> If you changed it, what advantages are there to your approach?
@@ -274,7 +419,7 @@ mapping was a big win, and could see no advantages in straying from
 it.
 
       	     SURVEY QUESTIONS
-	     ================
+             ================
 
 Answering these questions is optional, but it will help us improve the
 course in future quarters.  Feel free to tell us anything you
@@ -303,7 +448,14 @@ mechanism, but, annoyingly, that the directory layer does not make use
 of this mechanism (why!?!?). Given that we were advised not to touch
 the file system code, it seemed that the best choice was to write another
 reference-counting mechanism at the syscall layer. We're still unsure if
-this was the intent of the assignment.
+this was the intent of the assignment, as it seems silly to write another
+reference-counter when one already exists at a lower level. But we did it
+anyway to ensure compliance with the (rather vague) directions.
+
+Another area of poor clarity for us was memory access in syscall.c. We
+now understand that Pintos runs in mapped mode even when in the Kernel,
+but that didn't seem clear to us after reading the directions several
+times.
 
 >> Do you have any suggestions for the TAs to more effectively assist
 >> students, either for future quarters or the remaining projects?

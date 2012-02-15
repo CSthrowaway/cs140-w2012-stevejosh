@@ -239,20 +239,6 @@ start_process_parse_args (char **esp_ptr, char *arg_string)
   *(void**)(*esp_ptr) = NULL;
   
   return true;
-
-  /* TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
-     Remove this bit before submitting! */
-  if (false) {
-    hex_dump(0, *esp_ptr, argv_memory + sizeof(char*)*(args + 1) + 12, true);
-    
-    int argc = *(int*)(*esp_ptr + 4);
-    char** argv = *(char***)(*esp_ptr + 8);
-    
-    printf("%d args:\n", argc);
-    int i = 0;
-    for (i = 0; i < args; ++i)
-      printf("\t[%d] %s\n", i, argv[i]);
-  }
 }
 
 /* Change the running process' status to the given status, and notify the
@@ -380,7 +366,7 @@ process_wait (tid_t child_tid)
 
   /* If we were unable to get the status block, then the process is not
      a real process, not our child, or has already been waited on. */
-  if (status_block == NULL || status_block->status == PROCESS_INVALID)
+  if (status_block == NULL)
     {
       lock_release (&thread_current ()->child_changed_lock);
       return -1;
@@ -389,12 +375,8 @@ process_wait (tid_t child_tid)
   /* Wait until the process exits the PROCESS_STARTED status (meaning
      that the process has finished.) */  
   while (status_block->status == PROCESS_STARTED)
-    {
       cond_wait (&thread_current ()->child_changed,
                  &thread_current ()->child_changed_lock);
-      /* NOTE : Since the status_block address won't change, we don't
-                need to call get_child_status_block more than once. */
-    }
 
   int exit_code = status_block->exit_code;
 
