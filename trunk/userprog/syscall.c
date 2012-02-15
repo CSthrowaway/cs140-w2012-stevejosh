@@ -690,8 +690,7 @@ syscall_handler (struct intr_frame *f)
   for (i = 0; i < args; ++i)
     {
       const uint32_t *arg_address = (const uint32_t*)f->esp + i + 1;
-      const uint32_t *phys_address = validate_buffer((const char*)arg_address,
-                                                     sizeof(uint32_t));
+      const uint32_t *phys_address = translate_vaddr(arg_address);
       if (phys_address == NULL) goto abort;
       arg[i] = *phys_address;
     }

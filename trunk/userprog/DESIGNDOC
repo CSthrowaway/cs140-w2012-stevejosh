@@ -116,7 +116,7 @@ ability to support other argument-passing schemes (inflexible).
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
------------- In syscall.c ---------------
+------------ syscall.c ---------------
 
 /* Split calls to putbuf up into chunks of PUTBUF_BLOCK_SIZE
    bytes each. */
@@ -181,13 +181,61 @@ struct fileref_elem
   char name[NAME_MAX + 1];          /* Name of the file. */
 };
 
-in allocate_fd:
+--- In allocate_fd --:
   static int fd_current = 2;        /* Keeps track of the next unique fd
                                        number to be given out. */
 
------------- In thread.h -----------------
+------------ thread.h -----------------
 
-TODO
+/* States in a process' life cycle. 
+   (Owned by userprog/process.c) */
+enum process_status
+  {
+    PROCESS_STARTING,   /* Process has not yet started. */
+    PROCESS_STARTED,    /* Process has successfully loaded. */
+    PROCESS_FAILED,     /* Process failed to load. */
+    PROCESS_DONE,       /* Process has terminated. */
+    PROCESS_ORPHANED    /* The process' parent has died, so the process
+                           must no longer try to report status changes
+                           to the parent. */
+  }
+
+/* Process identifier type.
+   Note that the pid of a user process is the same as
+   the tid of the thread running the process. */
+typedef int pid_t;
+
+/* Owned by userprog/process.c. */
+struct child_status
+  {
+    struct list_elem elem;              /* List element for adding this struct
+                                           to a process' list of children. */
+    pid_t pid;                          /* pid of the child process. */
+    enum process_status status;         /* process status of the child. */
+    int exit_code;                      /* Exit code of process, only valid
+                                           if the process has already
+                                           run and terminated. */
+  };
+
+--- In struct thread --
+    struct file *executable;            /* Loaded executable for this user
+                                           process. */
+    struct thread *parent;              /* Parent thread. */
+    struct child_status *my_status;     /* Pointer to this thread's child_status
+                                           block in the parent thread. */                                        
+    struct list children;               /* Child processes of this thread. */
+    struct lock child_changed_lock;     /* Lock associated with the condition
+                                           variable below. */
+    struct condition child_changed;     /* Condition variable for signalling
+                                           that one of this thread's children
+                                           has changed status. */
+    struct list open_files;             /* Files currently opened by this
+                                           thread's process. */
+
+------------ process.c -----------------
+
+static struct lock process_death_lock;  /* Must be acquired by a process that
+                                           wishes to exit. */
 
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a
@@ -234,7 +282,39 @@ that is passed into the validation function.
 >> for a system call that only copies 2 bytes of data?  Is there room
 >> for improvement in these numbers, and how much?
 
+1 inspection will result from translating esp.
+Between 0 and 3 inspections will result from validating 0 to 3 arguments
+(each argument is treated as a 4-byte buffer, so both the beginning and
+end of the argument is checked).
+Finally, 2 inspections occur to validate the 4,096 byte buffer (assuming
+that this is a void* buffer as in read/write, not a const char* string),
+since we must validate both the first and last byte of the buffer (but
+doing so suffices, since the buffer spans at most two pages).
 
+Hence, we will perform between 3 inspections (if the buffer is somehow
+used in a theoretical system call that needs no arguments) and 6
+inspections (if the buffer is part of a 3-argument system call like
+read or write).
+
+The exact same numbers apply for a system call that copies 2 bytes of
+data. The inspections required for esp and arguments don't change, and
+the buffer check will still validate both the first and last byte of the
+buffer, since 2 bytes could potentially span 2 pages.
+
+There is very little room for improvement in these numbers - for fixed-size
+buffers, we are performing the absolute minimum validation necessary, while
+still ensuring complete kernel safety. Perhaps if we were to do some clever
+address manipulation, we could forego the checks of the arguments if we can
+clearly see that they do not lie on a page boundary. However, this kind of
+micro-optimization seems more dangerous than beneficial. Of course, if we
+had used the page-faulting approach, we would not require these inspections
+at all.
+
+Note, however, that these numbers change dramatically if this "data" is
+string (null-terminated) data. In this case, the buffer check would require
+a number of calls to pagedir_get_page equal to the length of the string.
+Since the question did not specify, we are assuming that it refers to
+fixed-size data.
 
 >> B5: Briefly describe your implementation of the "wait" system call
 >> and how it interacts with process termination.
@@ -373,6 +453,62 @@ in different manners, hence our implementation inside of process_exec.
 >> terminates without waiting, before C exits?  After C exits?  Are
 >> there any special cases?
 
+A.
+  If P calls wait(C) before C exits, then P will acquire its internal
+  child_changed_lock, and will wait on the condition variable
+  P->child_changed. When C exits, it will acquire the same lock in P,
+  modify the corresponding child status block, and signal P->child_changed.
+  P then wakes up and checks to see if the child that it was waiting on
+  has finished. Since both P and C protect their access to P with a lock
+  inside P, we avoid race conditions.
+
+B.
+  If P calls wait(C) after C exits, then C has already updated its
+  status block within P (again, this operation would have been
+  synchronized by the aforementioned lock). All P must do is acquire
+  P->child_changed_lock and check its status block that corresponds
+  to C. This is synchronized with the same locking mechanism as in (A).
+  
+C.
+  In either of the cases (A) or (B), since the parent terminates last,
+  it is responsible for freeing the child status blocks of all children.
+  Since the parent keeps track of *all* children that exist or have
+  existed and have not yet been waited on, it knows exactly which memory
+  must be freed. Thus, when P exits, it cleans up all of the memory
+  allocated for child processes. Note that waiting on a child process
+  causes the child status block to be freed as soon as the wait operation
+  is complete. Either way, all status blocks are freed.
+  
+D.
+  If P terminates without waiting, then it frees the status blocks of
+  any children that have already exited. However, since C has not
+  exited, P marks C's status block with the status "PROCESS_ORPHANED",
+  which lets C know that it no longer has a parent. Then, when C exits,
+  it will see that its status is orphaned, which indicates that it
+  should *not* try to acquire the child_changed lock or notify P of
+  a status change. It also recognizes that it needs to free up its own
+  status block, since P will not do so. Thus, C exits cleanly and frees
+  up its own memory.
+  
+E.
+  As mentioned in (D), when P exits, it cleans up the status blocks of
+  children that have exited, including C. So if P terminates without
+  waiting after C exits, then P will free up the memory allocated for C's
+  status block.
+
+F.
+  The worst-case-scenario (and rather special case) that we could think
+  of was "what if P and C attempt to exit at the same time, and they
+  interleave while exitting"? This poses a serious problem, as using
+  P's lock to synchronize won't work, because doing so might leave C
+  waiting on a lock that has been destroyed. To solve this race, we
+  chose to create a global lock called process_death_lock that must be
+  acquired during the death of a process. This protects us from P and C
+  interleaving while dying, and ensures that one of the aforementioned
+  (good/solved) cases will occur rather than the simultaneous death case.
+  Since the lock only affects dying processes, it does not pose a
+  significant threat to performance.
+
 ---- RATIONALE ----
 
 >> B9: Why did you choose to implement access to user memory from the
@@ -456,6 +592,10 @@ Another area of poor clarity for us was memory access in syscall.c. We
 now understand that Pintos runs in mapped mode even when in the Kernel,
 but that didn't seem clear to us after reading the directions several
 times.
+
+Finally, problem B4 is confusing and ambiguous. What kind of data is it?
+Why/where is it being read into the kernel? Etc. This question really
+needs to be cleaned up for next time!
 
 >> Do you have any suggestions for the TAs to more effectively assist
 >> students, either for future quarters or the remaining projects?
