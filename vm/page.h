@@ -16,11 +16,11 @@
 
 typedef uint32_t page_status;
 
-/* sup_table_entry defines the information that will be contained in the
+/* page_table_entry defines the information that will be contained in the
    supplementary page table. Each entry will be inserted into a process'
    supplementary table, and is responsible for keeping track of a single
    page of virtual memory. */
-struct sup_table_entry
+struct page_table_entry
   {
     struct hash_elem h_elem;      /* For wiring into a hash table. */
     struct list_elem l_elem;      /* For wiring into a frame's user list. */
@@ -31,13 +31,17 @@ struct sup_table_entry
     struct frame_elem* frame;     /* Pointer to this page's frame element. */
   };
 
-/* sup_table defines the supplementary page table contained in each process.
-   Note that each process own a sup_table lock for synchronization of paging
+/* page_table defines the supplementary page table contained in each process.
+   Note that each process owns a page table lock for synchronization of paging
    during fault-handling. */
-struct sup_table
+struct page_table
   {
     struct hash table;
     struct lock lock;
   };
 
 void page_init (void);
+struct page_table* page_table_create (void);
+
+struct page_table_entry*
+page_table_lookup (struct page_table *ptable, void* vaddr);
