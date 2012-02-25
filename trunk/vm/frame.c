@@ -8,16 +8,18 @@ static struct list frames_allocated;
 void
 frame_init (void)
 {
+  // TODO : Call this from somewhere!
   list_init (&frames_allocated);
 }
 
 struct frame_elem*
-frame_get (struct sup_table_entry *vpage)
+frame_get (struct page_table_entry *vpage)
 {
   void *page = palloc_get_page (PAL_USER);
   if (page == NULL)
     {
-      /* OH SHIT, GOTTA EVICT EM. */
+      /* OH SHIT, GOTTA EVICT EM. 
+         TODO : Evict sumbodeh. */
       return NULL;
     }
   else

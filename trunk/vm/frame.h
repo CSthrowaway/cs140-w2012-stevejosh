@@ -12,4 +12,4 @@ struct frame_elem
   };
 
 void frame_init (void);
-struct frame_elem *frame_get (struct sup_table_entry *vpage);
+struct frame_elem *frame_get (struct page_table_entry *vpage);
