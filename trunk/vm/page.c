@@ -28,17 +28,24 @@ page_table_entry_less (const struct hash_elem *a,
   return (a_e->vaddr < b_e->vaddr);
 }
 
-/* Returns a new, empty supplementary page table. */
+/* Returns a new, empty supplemental page table. */
 struct page_table*
 page_table_create (void)
 {
   struct page_table *t = malloc (sizeof(struct page_table));
   if (t == NULL)
-    PANIC ("page_table_create: unable to allocate supplementary page table");
+    PANIC ("page_table_create: unable to allocate supplemental page table");
   
   hash_init (&t->table, page_table_entry_hash, page_table_entry_less, NULL);
   lock_init (&t->lock);
   return t;
+}
+
+void
+page_table_free (struct page_table *ptable)
+{
+  // TODO - Free up all of the entries
+  free (ptable);
 }
 
 /* Look up the given virtual address in the given page table, returning the
@@ -60,13 +67,23 @@ page_table_lookup (struct page_table *ptable, void* vaddr)
   return hash_entry (found, struct page_table_entry, h_elem);
 }
 
+/* NOTE : Assumes that synchronization has already been taken care of (e.g.,
+          the caller has already acquired this page table's lock. */
 struct page_table_entry*
-page_table_addEntry (void* vaddr, page_status status, void* auxData)
+page_table_add_entry (struct page_table *ptable, void* vaddr,
+                      page_status status, void* aux_data)
 {
-  struct page_table_entry* entry = malloc (sizeof(struct page_table_entry));
+  ASSERT (vaddr == pg_round_down (vaddr));
+
+  struct page_table_entry *entry = malloc (sizeof(struct page_table_entry));
+  if (entry == NULL)
+    PANIC ("page_table_add_entry: unable to allocate page table entry");
+
   entry->vaddr = vaddr;
   entry->status = status;
-  entry->aux = auxData;
+  entry->aux = aux_data;
+
+  hash_insert (&ptable->table, &entry->h_elem);
   return entry;
 }
 

@@ -1,3 +1,6 @@
+#ifndef VM_FRAME_H
+#define VM_FRAME_H
+
 #include "lib/kernel/list.h"
 #include "vm/page.h"
 
@@ -13,3 +16,5 @@ struct frame_elem
 
 void frame_init (void);
 struct frame_elem *frame_get (struct page_table_entry *vpage);
+
+#endif
