@@ -173,7 +173,7 @@ start_process_parse_args (char **esp_ptr, char *arg_string)
   int argv_memory = strlen (arg_string) - whitespace_size + args;
   
   /* For performance reasons, round argv_memory up to the nearest multiple
-     of a word so that argc and argv will be word-aligned. */ 
+     of a word so that argc and argv will be word-aligned. */
   argv_memory = ROUND_UP (argv_memory, sizeof(int));
 
   int total_memory = argv_memory + sizeof(char*)*(args + 1) + sizeof(char**)
