@@ -19,16 +19,14 @@ swap_init (void)
   lock_init (&swap_io_lock);
   
   swap_block = block_get_role (BLOCK_SWAP);
-  if (swap_block == NULL)
-    PANIC ("swap_init: unable to allocate swap partition");
-
-  uint32_t page_count = block_size (swap_block) / BLOCKS_PER_PAGE;
-  free_blocks = bitmap_create (page_count);
-
-  if (free_blocks == NULL)
-    PANIC ("swap_init: unable to create free block bitmap");
-
-  bitmap_set_all (free_blocks, true);
+  if (swap_block != NULL)
+    {
+      uint32_t page_count = block_size (swap_block) / BLOCKS_PER_PAGE;
+      free_blocks = bitmap_create (page_count);
+      if (free_blocks == NULL)
+        PANIC ("swap_init: unable to create free block bitmap");
+      bitmap_set_all (free_blocks, true);
+    }
 }
 
 /* Allocates a page-sized swap slot, returning the swapid of the allocated
@@ -36,6 +34,7 @@ swap_init (void)
 swapid_t
 swap_alloc (void)
 {
+  ASSERT (swap_block != NULL);
   lock_acquire (&swap_alloc_lock);
   size_t id = bitmap_scan_and_flip (free_blocks, 0, 1, true);
   if (id == BITMAP_ERROR)
@@ -49,7 +48,8 @@ swap_alloc (void)
 void
 swap_free (swapid_t id)
 {
-  ASSERT(id < bitmap_size (free_blocks));
+  ASSERT (swap_block != NULL);
+  ASSERT (id < bitmap_size (free_blocks));
 
   lock_acquire (&swap_alloc_lock);
   bitmap_set (free_blocks, id, true);
@@ -61,6 +61,7 @@ swap_free (swapid_t id)
 void
 swap_read (swapid_t id, char *buf)
 {
+  ASSERT (swap_block != NULL);
   lock_acquire (&swap_io_lock);
   int i;
   for (i = 0; i < BLOCKS_PER_PAGE; ++i)
@@ -76,6 +77,7 @@ swap_read (swapid_t id, char *buf)
 void
 swap_write (swapid_t id, const char *buf)
 {
+  ASSERT (swap_block != NULL);
   lock_acquire (&swap_io_lock);
   int i;
   for (i = 0; i < BLOCKS_PER_PAGE; ++i)
