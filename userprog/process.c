@@ -275,13 +275,19 @@ start_process (void *process_information_)
   struct intr_frame if_;
   bool success;
 
+  /* Create the process' supplemental page table, and acquire a lock on
+     it. */
+  thread_current ()->page_table = page_table_create ();
+  lock_acquire (&thread_current ()->page_table->lock);
+
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
-  /* TODO TODO TODO TODO TODO TODO : Synchronize file access in load! */
+
+  lock_release (&thread_current ()->page_table->lock);
 
   /* Set the my_status pointer to point to the parent's child status
      block, as given in the process_information page. */
@@ -309,6 +315,7 @@ start_process (void *process_information_)
   /* If load or argument parsing failed, quit. */
   if (!success)
   {
+    page_table_free (thread_current ()->page_table);
     process_change_status (PROCESS_FAILED);
     palloc_free_page (process_information_);
     filesys_free_open_files (thread_current ());

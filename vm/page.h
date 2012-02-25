@@ -1,3 +1,6 @@
+#ifndef VM_PAGE_H
+#define VM_PAGE_H
+
 #include "lib/kernel/hash.h"
 #include "threads/synch.h"
 
@@ -33,8 +36,8 @@
 typedef uint32_t page_status;
 
 /* page_table_entry defines the information that will be contained in the
-   supplementary page table. Each entry will be inserted into a process'
-   supplementary table, and is responsible for keeping track of a single
+   supplemental page table. Each entry will be inserted into a process'
+   supplemental table, and is responsible for keeping track of a single
    page of virtual memory. */
 struct page_table_entry
   {
@@ -47,7 +50,7 @@ struct page_table_entry
     struct frame_elem* frame;     /* Pointer to this page's frame element. */
   };
 
-/* page_table defines the supplementary page table contained in each process.
+/* page_table defines the supplemental page table contained in each process.
    Note that each process owns a page table lock for synchronization of paging
    during fault-handling. */
 struct page_table
@@ -58,9 +61,13 @@ struct page_table
 
 void page_init (void);
 struct page_table* page_table_create (void);
+void page_table_free (struct page_table *ptable);
 
 struct page_table_entry*
 page_table_lookup (struct page_table *ptable, void* vaddr);
 
 struct page_table_entry*
-page_table_addEntry (void* vaddr, page_status status, void* auxData);
+page_table_add_entry (struct page_table *ptable, void* vaddr,
+                      page_status status, void* aux_data);
+
+#endif
