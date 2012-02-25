@@ -16,6 +16,7 @@
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
+#include "vm/swap.h"
 
 /* Split calls to putbuf up into chunks of PUTBUF_BLOCK_SIZE
    bytes each. */
@@ -106,6 +107,7 @@ syscall_init (void)
              filesys_fileref_func,
              filesys_fileref_less, NULL);
   process_init ();
+  swap_init ();
 }
 
 /* Hash function for fd_elems. */
