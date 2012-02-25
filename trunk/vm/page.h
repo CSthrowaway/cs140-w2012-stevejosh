@@ -14,6 +14,22 @@
 #define PAGE_RESIDENT 0x10        /* Set when the page is mapped to a frame. */
 #define PAGE_READONLY 0x20        /* Set when the page is not writeable. */
 
+// Macros for checking particular status bits of a page_status
+#define IS_PAGE_ZERO(x) (x & PAGE_ZERO)
+#define IS_PAGE_SWAP(x) (x & PAGE_SWAP)
+#define IS_PAGE_FILE(x) (x & PAGE_FILE)
+#define IS_PAGE_PINNED(x) (x & PAGE_PINNED)
+#define IS_PAGE_RESIDENT(x) (x & PAGE_RESIDENT)
+#define IS_PAGE_READONLY(x) (x & PAGE_READONLY)
+
+// Macros for setting individual status bits of a page_status
+#define SET_PAGE_ZERO(x) (x|=PAGE_ZERO)
+#define SET_PAGE_SWAP(x) (x|=PAGE_SWAP)
+#define SET_PAGE_FILE(x) (x|=PAGE_FILE)
+#define SET_PAGE_PINNED(x) (x|=PAGE_PINNED)
+#define SET_PAGE_RESIDENT(x) (x|=PAGE_RESIDENT)
+#define SET_PAGE_READONLY(x) (x|=PAGE_READONLY)
+
 typedef uint32_t page_status;
 
 /* page_table_entry defines the information that will be contained in the
@@ -45,3 +61,6 @@ struct page_table* page_table_create (void);
 
 struct page_table_entry*
 page_table_lookup (struct page_table *ptable, void* vaddr);
+
+struct page_table_entry*
+page_table_addEntry (void* vaddr, page_status status, void* auxData);

@@ -60,4 +60,14 @@ page_table_lookup (struct page_table *ptable, void* vaddr)
   return hash_entry (found, struct page_table_entry, h_elem);
 }
 
+struct page_table_entry*
+page_table_addEntry (void* vaddr, page_status status, void* auxData)
+{
+  struct page_table_entry* entry = malloc (sizeof(struct page_table_entry));
+  entry->vaddr = vaddr;
+  entry->status = status;
+  entry->aux = auxData;
+  return entry;
+}
+
 //success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
