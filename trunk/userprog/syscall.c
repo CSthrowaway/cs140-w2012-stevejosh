@@ -575,6 +575,21 @@ syscall_filesize (int fd)
   return return_value;
 }
 
+int
+filesys_read (int fd, void *buffer, unsigned size)
+{
+  lock_filesys ();
+  struct file *handle = filesys_get_file (fd);
+  if (handle == NULL)
+    {
+      unlock_filesys ();
+      return -1;
+    }
+  off_t bytes_read = file_read (handle, buffer, size);
+  unlock_filesys ();
+  return bytes_read;
+}
+
 /* -- System Call #8 -- */
 static int
 syscall_read (int fd, void *buffer, unsigned size)
@@ -593,18 +608,22 @@ syscall_read (int fd, void *buffer, unsigned size)
       return size;
     }
   else
+    return filesys_read (fd, buffer, size);
+}
+
+int
+filesys_write (int fd, const void *buffer, unsigned size)
+{
+  lock_filesys ();
+  struct file *handle = filesys_get_file (fd);
+  if (handle == NULL)
     {
-      lock_filesys ();
-      struct file *handle = filesys_get_file (fd);
-      if (handle == NULL)
-        {
-          unlock_filesys ();
-          return -1;
-        }
-      off_t bytes_read = file_read (handle, buffer, size);
       unlock_filesys ();
-      return bytes_read;
+      return -1;
     }
+  off_t bytes_written = file_write (handle, buffer, size);
+  unlock_filesys ();
+  return bytes_written;
 }
 
 /* -- System Call #9 --
@@ -633,18 +652,16 @@ syscall_write (int fd, const void *buffer, unsigned size)
       return size;
     }
   else
-    {
-      lock_filesys ();
-      struct file *handle = filesys_get_file (fd);
-      if (handle == NULL)
-        {
-          unlock_filesys ();
-          return -1;
-        }
-      off_t bytes_written = file_write (handle, buffer, size);
-      unlock_filesys ();
-      return bytes_written;
-    }
+    return filesys_write (fd, buffer, size);
+}
+
+void
+filesys_seek (int fd, unsigned position)
+{
+  lock_filesys ();
+  struct file *handle = filesys_get_file (fd);
+  file_seek (handle, position);
+  unlock_filesys ();
 }
 
 /* -- System Call #10 --
@@ -653,10 +670,7 @@ syscall_write (int fd, const void *buffer, unsigned size)
 static void
 syscall_seek (int fd, unsigned position)
 {
-  lock_filesys ();
-  struct file *handle = filesys_get_file (fd);
-  file_seek (handle, position);
-  unlock_filesys ();
+  filesys_seek (fd, position);
 }
 
 /* -- System Call #11 --

@@ -60,8 +60,11 @@ frame_load_data (struct frame *frame)
     swap_read (frame->aux1, frame->paddr);
   else if (frame->status & FRAME_MMAP)
     {
-      // TODO this.
-      PANIC ("frame_load_data: mmap loading not yet implemented");
+      int fd = process_get_mmap_fd (frame->aux1);
+      ASSERT (fd >= 0);
+      filesys_seek (fd, frame->aux2);
+      if (filesys_read (fd, frame->paddr, PGSIZE) != PGSIZE)
+        PANIC ("frame_load_data: mmap failed to load file");
     }
 }
 

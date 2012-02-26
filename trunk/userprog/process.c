@@ -502,22 +502,25 @@ process_activate (void)
 
 
 /* Opens a new file from file_name and stores the file descriptor into the
-   current thread's mmapid */
+   current thread's mmapid. */
 int
 process_add_mmap_from_name (const char *file_name)
 {
   int fd = syscall_open (file_name);
-  // ensure valid file id
+  
+  /* Return error if we failed to open. */
   if (fd <= 1)
     return -1;
   
   struct thread* t = thread_current ();
   int mapid = t->next_mapid++;
-  struct mmap_table_entry* new_entry = malloc
-    (sizeof(struct mmap_table_entry));
-  new_entry->id = mapid;
-  new_entry->fd = fd;
-  list_push_back (&t->mmap_table, &t->elem);
+  struct mmap_table_entry* entry = malloc (sizeof(struct mmap_table_entry));
+  if (entry == NULL)
+    PANIC ("process_add_mmap_from_name: failed to allocate table entry");
+
+  entry->id = mapid;
+  entry->fd = fd;
+  list_push_back (&t->mmap_table, &entry->elem);
   return mapid;
 }
 
@@ -525,6 +528,28 @@ int
 process_add_mmap_from_fd (int fd)
 {
   return process_add_mmap_from_name (filesys_get_filename_from_fd (fd));
+}
+
+/* Search through the process' active mmap table, and return the file
+   descriptor associated with the given mmapid. Returns -1 if no such
+   mmapid exists in the current process' mmap table. */
+int
+process_get_mmap_fd (mmapid_t mapid)
+{
+  // TODO Synchron!
+  struct list_elem *e;
+  
+  struct list *mmap_table = &thread_current ()->mmap_table;
+  for (e = list_begin (mmap_table); e != list_end (mmap_table);
+       e = list_next (e))
+    {
+      struct mmap_table_entry *s =
+        list_entry (e, struct mmap_table_entry, elem);
+      if (s->id == mapid)
+        return s->fd;
+    }
+    
+  return -1;
 }
 
 
@@ -639,7 +664,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
       goto done; 
     }
     
-  mmapid_t mmapid = 0;//TODO CREATE MMAP;
+  mmapid_t mmapid = process_add_mmap_from_name (file_name);
 
   /* Read program headers. */
   file_ofs = ehdr.e_phoff;
