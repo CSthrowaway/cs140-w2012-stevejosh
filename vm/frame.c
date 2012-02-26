@@ -64,8 +64,8 @@ frame_load_data (struct frame *frame)
     {
       int fd = process_get_mmap_fd (frame->aux1);
       ASSERT (fd >= 0);
-      filesys_seek (fd, frame->aux2);
-      if (filesys_read (fd, frame->paddr, PGSIZE) != PGSIZE)
+      fd_seek (fd, frame->aux2);
+      if (fd_read (fd, frame->paddr, PGSIZE) != PGSIZE)
         PANIC ("frame_load_data: mmap failed to load file");
     }
 }
