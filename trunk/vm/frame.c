@@ -3,6 +3,8 @@
 #include "threads/malloc.h"
 #include "threads/palloc.h"
 #include "threads/vaddr.h"
+#include "userprog/process.h"
+#include "userprog/syscall.h"
 #include "vm/frame.h"
 #include "vm/swap.h"
 
