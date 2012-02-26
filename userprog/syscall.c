@@ -35,6 +35,7 @@ static bool filesys_fdhash_less (const struct hash_elem *a,
 static bool filesys_fileref_less (const struct hash_elem *a,
                                     const struct hash_elem *b,
                                     void *aux UNUSED);
+static struct file* filesys_get_file (int fd);
 
 static struct lock filesys_lock;    /* Lock for file system access. */
 static struct hash filesys_fdhash;  /* Hash table mapping fds to
@@ -61,7 +62,9 @@ static uint8_t syscall_arg_count[] =
   3,      /* Write */
   2,      /* Seek */
   1,      /* Tell */
-  1       /* Close */
+  1,      /* Close */
+  2,      /* Mmap */
+  1       /* Munmap */
 };
 
 /* An fd_elem encapsulates the information held by a file descriptor.
@@ -211,6 +214,18 @@ static struct fileref_elem*
 filesys_get_fileref (struct file* f)
 {
   return filesys_get_fileref_from_inode (file_get_inode (f));
+}
+
+/* Returns the fileref_elem name member of the file corresponding to the
+   given file descriptor fd. */
+const char*
+filesys_get_filename_from_fd (int fd)
+{
+  struct file* f = filesys_get_file (fd);
+  if (f != NULL)
+    return (filesys_get_fileref (f))->name;
+  else
+    return NULL;
 }
 
 /* Closes the given file. In doing so, properly decrements the global
@@ -483,7 +498,7 @@ syscall_remove (const char *file)
    globally unique, or -1 if the file could not be opened. 0 and 1 are
    reserved. Repeated calls with the same file returns a new file descriptor
    per call. */
-static int
+int
 syscall_open (const char *file)
 {
   if (!is_valid_filename (file))
@@ -669,6 +684,27 @@ syscall_close (int fd)
   unlock_filesys ();
 }
 
+/* -- System Call #13 --
+   Maps the file open as fd into consecutive virtual pages of the current
+   process starting at addr. */
+static mapid_t
+syscall_mmap (int fd, void *addr)
+{
+  int id = process_add_mmap_from_fd (fd);
+  // perform actual mapping
+  return id;
+}
+
+/* -- System Call #14 --
+   Unmaps the mapping designated by mapping. */
+static void
+syscall_munmap (mapid_t mapping)
+{
+  struct thread* t = thread_current ();
+  // search t for mapping and remove it
+}
+
+
 static void
 syscall_handler (struct intr_frame *f)
 {
@@ -754,6 +790,14 @@ syscall_handler (struct intr_frame *f)
       break;
     case SYS_CLOSE:      
       syscall_close ((int)arg[0]);
+      break;
+    case SYS_MMAP:
+      ret = true;
+      ret_val = syscall_mmap((int)arg[0],(void*)arg[1]);      
+      break;
+    case SYS_MUNMAP:
+      ret = false;
+      syscall_munmap((mapid_t)arg[0]);
       break;
   }
  

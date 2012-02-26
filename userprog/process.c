@@ -499,7 +499,35 @@ process_activate (void)
      interrupts. */
   tss_update ();
 }
-
+
+
+/* Opens a new file from file_name and stores the file descriptor into the
+   current thread's mmapid */
+int
+process_add_mmap_from_name (const char *file_name)
+{
+  int fd = syscall_open (file_name);
+  // ensure valid file id
+  if (fd <= 1)
+    return -1;
+  
+  struct thread* t = thread_current ();
+  int mapid = t->next_mapid++;
+  struct mmap_table_entry* new_entry = malloc
+    (sizeof(struct mmap_table_entry));
+  new_entry->id = mapid;
+  new_entry->fd = fd;
+  list_push_back (&t->mmap_table, &t->elem);
+  return mapid;
+}
+
+int 
+process_add_mmap_from_fd (int fd)
+{
+  return process_add_mmap_from_name (filesys_get_filename_from_fd (fd));
+}
+
+
 /* We load ELF binaries.  The following definitions are taken
    from the ELF specification, [ELF1], more-or-less verbatim.  */
 

@@ -37,6 +37,10 @@ typedef int tid_t;
    Note that the pid of a user process is the same as
    the tid of the thread running the process. */
 typedef int pid_t;
+
+typedef int mapid_t;
+/* Mmap identification type. */
+
 #define TID_ERROR ((tid_t) -1)          /* Error value for tid_t. */
 
 /* Owned by userprog/process.c. */
@@ -155,6 +159,11 @@ struct thread
                                            has changed status. */
     struct list open_files;             /* Files currently opened by this
                                            thread's process. */
+#endif
+#ifdef VM
+    struct list mmap_table;             /* Mmap table of mmapids and file
+					   descriptors. */
+    int next_mapid;                     /* Next mapid to be used in mmap. */
 #endif
 
     struct page_table *page_table;      /* Supplemental page table for virtual
