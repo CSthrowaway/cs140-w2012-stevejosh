@@ -80,6 +80,7 @@ page_table_add_entry (struct page_table *ptable, void* vaddr,
     PANIC ("page_table_add_entry: unable to allocate page table entry");
 
   entry->vaddr = vaddr;
+  entry->frame = frame;
   hash_insert (&ptable->table, &entry->h_elem);
   list_push_back (&frame->users, &entry->l_elem);
   return entry;

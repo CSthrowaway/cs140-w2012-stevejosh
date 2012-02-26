@@ -23,13 +23,6 @@
 #define IS_FRAME_PINNED(x) ((x) & FRAME_PINNED)
 #define IS_FRAME_READONLY(x) ((x) & FRAME_READONLY)
 
-// Macros for setting individual status bits of a page_status
-#define SET_FRAME_ZERO(x)     ((x)|=FRAME_ZERO)
-#define SET_FRAME_SWAP(x)     ((x)|=FRAME_SWAP)
-#define SET_FRAME_FILE(x)     ((x)|=FRAME_FILE)
-#define SET_FRAME_PINNED(x)   ((x)|=FRAME_PINNED)
-#define SET_FRAME_READONLY(x) ((x)|=FRAME_READONLY)
-
 typedef uint32_t frame_status;
 
 typedef void* frame;
@@ -53,6 +46,8 @@ void frame_init (void);
 struct frame *frame_alloc (void);
 void frame_free (struct frame *frame);
 void frame_page_in (struct frame *frame);
+
+void frame_set_attribute (struct frame *frame, uint32_t attribute, bool on);
 
 void frame_set_mmap (struct frame *frame, mmapid_t id, uint32_t offset);
 void frame_set_zero (struct frame *frame);

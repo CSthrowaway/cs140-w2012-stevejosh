@@ -21,7 +21,8 @@ frame_alloc (void)
   struct frame* frame = malloc (sizeof(struct frame));
   if (frame == NULL)
     PANIC ("frame_alloc: unable to allocate frame");
-  frame->paddr = NULL;
+
+  memset (frame, 0, sizeof (struct frame));
   list_init (&frame->users);
   return frame;
 }
@@ -81,6 +82,15 @@ frame_page_in (struct frame *frame)
   list_push_back (&frames_allocated, &frame->elem);
 
   frame_load_data (frame);
+}
+
+void
+frame_set_attribute (struct frame *frame, uint32_t attribute, bool on)
+{
+  if (on)
+    frame->status |= attribute;
+  else
+    frame->status &= ~attribute;
 }
 
 /* Mark the given frame as mmapd. */
