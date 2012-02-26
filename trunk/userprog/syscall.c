@@ -493,17 +493,9 @@ syscall_remove (const char *file)
   return success;
 }
 
-/* -- System Call #6 --
-   Opens a file called file. Returns a nonnegative file descriptor that is
-   globally unique, or -1 if the file could not be opened. 0 and 1 are
-   reserved. Repeated calls with the same file returns a new file descriptor
-   per call. */
 int
-syscall_open (const char *file)
+fd_open (const char *file)
 {
-  if (!is_valid_filename (file))
-    return -1;
-
   lock_filesys ();
   struct file* handle = filesys_open (file);
   
@@ -562,6 +554,19 @@ syscall_open (const char *file)
   return newhash->fd;
 }
 
+/* -- System Call #6 --
+   Opens a file called file. Returns a nonnegative file descriptor that is
+   globally unique, or -1 if the file could not be opened. 0 and 1 are
+   reserved. Repeated calls with the same file returns a new file descriptor
+   per call. */
+int
+syscall_open (const char *file)
+{
+  if (!is_valid_filename (file))
+    return -1;
+  return fd_open (file);
+}
+
 /* -- System Call #7 --
    Returns the size of the file associated with the given fd, or -1
    if the fd does not exist for the given process. */
@@ -576,7 +581,7 @@ syscall_filesize (int fd)
 }
 
 int
-filesys_read (int fd, void *buffer, unsigned size)
+fd_read (int fd, void *buffer, unsigned size)
 {
   lock_filesys ();
   struct file *handle = filesys_get_file (fd);
@@ -608,11 +613,11 @@ syscall_read (int fd, void *buffer, unsigned size)
       return size;
     }
   else
-    return filesys_read (fd, buffer, size);
+    return fd_read (fd, buffer, size);
 }
 
 int
-filesys_write (int fd, const void *buffer, unsigned size)
+fd_write (int fd, const void *buffer, unsigned size)
 {
   lock_filesys ();
   struct file *handle = filesys_get_file (fd);
@@ -652,11 +657,11 @@ syscall_write (int fd, const void *buffer, unsigned size)
       return size;
     }
   else
-    return filesys_write (fd, buffer, size);
+    return fd_write (fd, buffer, size);
 }
 
 void
-filesys_seek (int fd, unsigned position)
+fd_seek (int fd, unsigned position)
 {
   lock_filesys ();
   struct file *handle = filesys_get_file (fd);
@@ -670,7 +675,7 @@ filesys_seek (int fd, unsigned position)
 static void
 syscall_seek (int fd, unsigned position)
 {
-  filesys_seek (fd, position);
+  fd_seek (fd, position);
 }
 
 /* -- System Call #11 --

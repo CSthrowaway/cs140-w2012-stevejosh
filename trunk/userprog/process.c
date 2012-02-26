@@ -506,7 +506,7 @@ process_activate (void)
 int
 process_add_mmap_from_name (const char *file_name)
 {
-  int fd = syscall_open (file_name);
+  int fd = fd_open (file_name);
   
   /* Return error if we failed to open. */
   if (fd <= 1)
