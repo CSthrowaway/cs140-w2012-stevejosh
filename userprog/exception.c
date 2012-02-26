@@ -5,6 +5,8 @@
 #include "userprog/process.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "vm/frame.h"
+#include "vm/page.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -154,6 +156,22 @@ page_fault (struct intr_frame *f)
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
+  if (user)
+    {
+      struct page_table_entry *entry =
+        page_table_lookup (thread_current ()->page_table, fault_addr);
+
+      if (entry == NULL)
+        {
+          printf ("Segmentation fault at %p. Terminating process.\n",
+                  fault_addr);
+          process_release (-1);
+          thread_exit ();
+        }
+        
+      frame_page_in (entry->frame);
+    }
+  
   printf ("Page fault at %p: %s error %s page in %s context.\n",
           fault_addr,
           not_present ? "not present" : "rights violation",

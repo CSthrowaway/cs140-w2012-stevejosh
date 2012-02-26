@@ -19,6 +19,8 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "vm/frame.h"
+#include "vm/page.h"
 
 static thread_func start_process NO_RETURN;
 static struct lock process_death_lock;  /* Must be acquired by a process that
@@ -428,6 +430,13 @@ process_exit (void)
 void
 process_release (int exit_code)
 {
+  /* TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
+     Clean up resources:
+        mmaps
+        page table
+        SHIT.
+  */
+   
   lock_acquire (&process_death_lock);
   printf("%s: exit(%d)\n", thread_current ()->name, exit_code); 
  
@@ -601,6 +610,8 @@ load (const char *file_name, void (**eip) (void), void **esp)
       printf ("load: %s: error loading executable\n", file_name);
       goto done; 
     }
+    
+  mmapid_t mmapid = 0;//TODO CREATE MMAP;
 
   /* Read program headers. */
   file_ofs = ehdr.e_phoff;
@@ -636,24 +647,45 @@ load (const char *file_name, void (**eip) (void), void **esp)
               uint32_t mem_page = phdr.p_vaddr & ~PGMASK;
               uint32_t page_offset = phdr.p_vaddr & PGMASK;
               uint32_t read_bytes, zero_bytes;
+
+              uint32_t i;
               if (phdr.p_filesz > 0)
                 {
                   /* Normal segment.
                      Read initial part from disk and zero the rest. */
                   read_bytes = page_offset + phdr.p_filesz;
-                  zero_bytes = (ROUND_UP (page_offset + phdr.p_memsz, PGSIZE)
-                                - read_bytes);
+                  //zero_bytes = (ROUND_UP (page_offset + phdr.p_memsz, PGSIZE)
+                  //              - read_bytes);
+
+                  for (i = 0; i < read_bytes; i += PGSIZE)
+                    {
+                      struct frame *frame = frame_alloc ();
+                      frame_set_mmap (frame, mmapid, file_page + i);
+                      frame_set_attribute (frame, FRAME_READONLY, !writable);
+                      page_table_add_entry (thread_current ()->page_table,
+                                            (void *)(mem_page + i), frame);
+                    }
                 }
               else 
                 {
                   /* Entirely zero.
                      Don't read anything from disk. */
-                  read_bytes = 0;
+                  //read_bytes = 0;
                   zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
+                  
+                  for (i = 0; i < zero_bytes; i += PGSIZE)
+                    {
+                      struct frame *frame = frame_alloc ();
+                      frame_set_zero (frame);
+                      frame_set_attribute (frame, FRAME_READONLY, !writable);
+                      page_table_add_entry (thread_current ()->page_table,
+                                            (void *)(mem_page + i), frame);
+                    }
                 }
-              if (!load_segment (file, file_page, (void *) mem_page,
-                                 read_bytes, zero_bytes, writable))
-                goto done;
+              
+              //if (!load_segment (file, file_page, (void *) mem_page,
+              //                   read_bytes, zero_bytes, writable))
+              //  goto done;
             }
           else
             goto done;
@@ -672,6 +704,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
+  if (!success)
+    // TODO TODO TODO TODO TODO TODO TODO TODO CLEAN UP THE MMAP
+  
   file_close (file);
   return success;
 }
