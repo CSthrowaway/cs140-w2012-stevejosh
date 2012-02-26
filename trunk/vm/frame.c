@@ -17,6 +17,8 @@ frame_init (void)
   list_init (&frames_allocated);
 }
 
+#include "lib/stdio.h"
+
 struct frame*
 frame_alloc (void)
 {
