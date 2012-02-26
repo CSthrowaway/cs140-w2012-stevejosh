@@ -2,9 +2,11 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include "userprog/gdt.h"
+#include "userprog/pagedir.h"
 #include "userprog/process.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "threads/vaddr.h"
 #include "vm/frame.h"
 #include "vm/page.h"
 
@@ -168,8 +170,12 @@ page_fault (struct intr_frame *f)
           process_release (-1);
           thread_exit ();
         }
-        
+
       frame_page_in (entry->frame);
+      pagedir_set_page (thread_current ()->pagedir,
+                        pg_round_down (fault_addr),
+                        entry->frame->paddr,
+                        !(entry->frame->status & FRAME_READONLY));
     }
   else
   {  
