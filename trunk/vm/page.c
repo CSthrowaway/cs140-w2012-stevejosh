@@ -6,7 +6,7 @@
 void
 page_init (void)
 {
-  // TODO : Anything here?
+  // TODO : Anything here? If so, call it from syscall.c
 }
 
 /* Hash function for page table entries (uses virtual address). */
@@ -71,7 +71,7 @@ page_table_lookup (struct page_table *ptable, void* vaddr)
           the caller has already acquired this page table's lock. */
 struct page_table_entry*
 page_table_add_entry (struct page_table *ptable, void* vaddr,
-                      page_status status, void* aux_data)
+                      struct frame *frame)
 {
   ASSERT (vaddr == pg_round_down (vaddr));
 
@@ -80,10 +80,8 @@ page_table_add_entry (struct page_table *ptable, void* vaddr,
     PANIC ("page_table_add_entry: unable to allocate page table entry");
 
   entry->vaddr = vaddr;
-  entry->status = status;
-  entry->aux = aux_data;
-
   hash_insert (&ptable->table, &entry->h_elem);
+  list_push_back (&frame->users, &entry->l_elem);
   return entry;
 }
 

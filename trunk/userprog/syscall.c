@@ -108,6 +108,7 @@ syscall_init (void)
              filesys_fileref_less, NULL);
   process_init ();
   swap_init ();
+  frame_init ();
 }
 
 /* Hash function for fd_elems. */
