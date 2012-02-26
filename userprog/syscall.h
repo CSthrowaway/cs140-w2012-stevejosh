@@ -5,4 +5,9 @@ void filesys_free_open_files (struct thread *t);
 const char* filesys_get_filename_from_fd (int fd);
 void syscall_init (void);
 int syscall_open (const char *file);
+
+int filesys_read (int fd, void *buffer, unsigned size);
+int filesys_write (int fd, const void *buffer, unsigned size);
+void filesys_seek (int fd, unsigned position);
+
 #endif /* userprog/syscall.h */
