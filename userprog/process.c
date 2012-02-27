@@ -618,7 +618,7 @@ struct Elf32_Phdr
 
 static bool setup_stack (void **esp);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
-static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
+static bool load_segment (struct file *file, mmapid_t mmapid, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
                           bool writable);
 
@@ -701,44 +701,26 @@ load (const char *file_name, void (**eip) (void), void **esp)
               uint32_t page_offset = phdr.p_vaddr & PGMASK;
               uint32_t read_bytes, zero_bytes;
 
-              uint32_t i;
               if (phdr.p_filesz > 0)
                 {
                   /* Normal segment.
                      Read initial part from disk and zero the rest. */
                   read_bytes = page_offset + phdr.p_filesz;
-                  //zero_bytes = (ROUND_UP (page_offset + phdr.p_memsz, PGSIZE)
-                  //              - read_bytes);
-
-                  for (i = 0; i < read_bytes; i += PGSIZE)
-                    {
-                      struct frame *frame = frame_alloc ();
-                      frame_set_mmap (frame, mmapid, file_page + i);
-                      frame_set_attribute (frame, FRAME_READONLY, !writable);
-                      page_table_add_entry (thread_current ()->page_table,
-                                            (void *)(mem_page + i), frame);
-                    }
+                  zero_bytes = (ROUND_UP (page_offset + phdr.p_memsz, PGSIZE)
+                                - read_bytes);
                 }
               else 
                 {
                   /* Entirely zero.
                      Don't read anything from disk. */
-                  //read_bytes = 0;
+                  read_bytes = 0;
                   zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
-                  
-                  for (i = 0; i < zero_bytes; i += PGSIZE)
-                    {
-                      struct frame *frame = frame_alloc ();
-                      frame_set_zero (frame);
-                      frame_set_attribute (frame, FRAME_READONLY, !writable);
-                      page_table_add_entry (thread_current ()->page_table,
-                                            (void *)(mem_page + i), frame);
-                    }
                 }
               
-              //if (!load_segment (file, file_page, (void *) mem_page,
-              //                   read_bytes, zero_bytes, writable))
-              //  goto done;
+              if (!load_segment (file, mmapid, file_page, (void *) mem_page,
+                                 read_bytes, zero_bytes, writable))
+                goto done;
+              //hex_dump (mem_page, mem_page, read_bytes + zero_bytes, true);
             }
           else
             goto done;
@@ -828,12 +810,51 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
    Return true if successful, false if a memory allocation error
    or disk read error occurs. */
 static bool
-load_segment (struct file *file, off_t ofs, uint8_t *upage,
+load_segment (struct file *file, mmapid_t mmapid, off_t ofs, uint8_t *upage,
               uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
 {
   ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
+
+#if 1
+  uint32_t i;
+  for (i = 0; i < read_bytes; i += PGSIZE)
+    {
+      struct frame *frame = frame_alloc ();
+      uint32_t bytes_to_read = read_bytes >= i + PGSIZE ? PGSIZE :
+                                                          read_bytes - i;
+      frame_set_mmap (frame, mmapid, ofs + i, bytes_to_read);
+      frame_set_attribute (frame, FRAME_READONLY, !writable);
+      page_table_add_entry (thread_current ()->page_table,
+                            (void *)(upage + i), frame);
+      //printf ("[%p] : %d read bytes.\n", upage + i, PGSIZE);
+      //frame_page_in (frame);
+      //pagedir_set_page (thread_current ()->pagedir,
+      //            upage + i,
+      //            frame->paddr,
+      //            !(frame->status & FRAME_READONLY));
+    }
+
+  zero_bytes -= (ROUND_UP (read_bytes, PGSIZE) - read_bytes);
+  read_bytes = ROUND_UP (read_bytes, PGSIZE);
+
+  for (i = 0; i < zero_bytes; i += PGSIZE)
+    {
+      struct frame *frame = frame_alloc ();
+      frame_set_zero (frame);
+      frame_set_attribute (frame, FRAME_READONLY, !writable);
+      page_table_add_entry (thread_current ()->page_table,
+                            (void *)(upage + read_bytes + i), frame);
+      //printf ("[%p] : %d zero bytes.\n", upage + read_bytes + i, PGSIZE);
+      //frame_page_in (frame);
+      //pagedir_set_page (thread_current ()->pagedir,
+      //            upage + read_bytes + i,
+      //            frame->paddr,
+      //            !(frame->status & FRAME_READONLY));
+    }
+
+#else
 
   file_seek (file, ofs);
   while (read_bytes > 0 || zero_bytes > 0) 
@@ -857,6 +878,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
         }
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
 
+      printf ("[%p] : %d read bytes, %d zero bytes.\n", upage, page_read_bytes, page_zero_bytes);
       /* Add the page to the process's address space. */
       if (!install_page (upage, kpage, writable)) 
         {
@@ -869,6 +891,8 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
     }
+    
+#endif
   return true;
 }
 

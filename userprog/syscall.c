@@ -567,17 +567,22 @@ syscall_open (const char *file)
   return fd_open (file);
 }
 
-/* -- System Call #7 --
-   Returns the size of the file associated with the given fd, or -1
-   if the fd does not exist for the given process. */
-static int
-syscall_filesize (int fd)
+int fd_filesize (int fd)
 {
   lock_filesys ();
   struct file *handle = filesys_get_file (fd);
   int return_value = (handle == NULL) ? -1 : file_length (handle);
   unlock_filesys ();
   return return_value;
+}
+
+/* -- System Call #7 --
+   Returns the size of the file associated with the given fd, or -1
+   if the fd does not exist for the given process. */
+static int
+syscall_filesize (int fd)
+{
+  return fd_filesize (fd);
 }
 
 int

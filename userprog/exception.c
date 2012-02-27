@@ -172,6 +172,8 @@ page_fault (struct intr_frame *f)
         }
 
       frame_page_in (entry->frame);
+      ASSERT (entry->frame->paddr != NULL);
+
       pagedir_set_page (thread_current ()->pagedir,
                         pg_round_down (fault_addr),
                         entry->frame->paddr,

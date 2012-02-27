@@ -33,6 +33,7 @@ struct frame
     frame_status status;
     uint32_t aux1;
     uint32_t aux2;
+    uint32_t aux3;
     struct list_elem elem;          /* List element for allocated list. */
     struct list users;              /* List of all virtual pages using this
                                        physical frame (will usually be a
@@ -49,7 +50,8 @@ void frame_page_in (struct frame *frame);
 
 void frame_set_attribute (struct frame *frame, uint32_t attribute, bool on);
 
-void frame_set_mmap (struct frame *frame, mmapid_t id, uint32_t offset);
+void frame_set_mmap (struct frame *frame, mmapid_t id, uint32_t offset,
+                     uint32_t bytes_to_read);
 void frame_set_zero (struct frame *frame);
 void frame_set_swap (struct frame *frame);
 #endif
