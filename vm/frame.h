@@ -19,7 +19,7 @@
 // Macros for checking particular status bits of a page_status
 #define IS_FRAME_ZERO(x) ((x) & FRAME_ZERO)
 #define IS_FRAME_SWAP(x) ((x) & FRAME_SWAP)
-#define IS_FRAME_FILE(x) ((x) & FRAME_FILE)
+#define IS_FRAME_MMAP(x) ((x) & FRAME_MMAP)
 #define IS_FRAME_PINNED(x) ((x) & FRAME_PINNED)
 #define IS_FRAME_READONLY(x) ((x) & FRAME_READONLY)
 
