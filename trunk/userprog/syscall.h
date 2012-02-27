@@ -11,6 +11,7 @@ int syscall_open (const char *file);
 int fd_open (const char *file);
 int fd_read (int fd, void *buffer, unsigned size);
 int fd_write (int fd, const void *buffer, unsigned size);
+int fd_filesize (int fd);
 void fd_seek (int fd, unsigned position);
 
 #endif /* userprog/syscall.h */

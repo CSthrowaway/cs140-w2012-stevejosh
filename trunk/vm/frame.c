@@ -66,9 +66,19 @@ frame_load_data (struct frame *frame)
     {
       int fd = process_get_mmap_fd (frame->aux1);
       ASSERT (fd >= 0);
+      int file_size = fd_filesize (fd);
+
+      /* Determine the proper number of bytes to read from the file.
+         The remainder of the page should be zeroed. */ 
+      int read_bytes = frame->aux3;
+      int zero_bytes = PGSIZE - read_bytes;
+
       fd_seek (fd, frame->aux2);
-      if (fd_read (fd, frame->paddr, PGSIZE) != PGSIZE)
+      if (fd_read (fd, frame->paddr, read_bytes) != read_bytes)
         PANIC ("frame_load_data: mmap failed to load file");
+      
+      if (zero_bytes > 0)
+        memset ((char*)frame->paddr + read_bytes, 0, zero_bytes);
     }
 }
 
@@ -102,10 +112,12 @@ frame_set_attribute (struct frame *frame, uint32_t attribute, bool on)
 
 /* Mark the given frame as mmapd. */
 void
-frame_set_mmap (struct frame *frame, mmapid_t id, uint32_t offset)
+frame_set_mmap (struct frame *frame, mmapid_t id, uint32_t offset,
+                uint32_t bytes_to_read)
 {
   frame->aux1 = id;
   frame->aux2 = offset;
+  frame->aux3 = bytes_to_read;
   frame->status |= FRAME_MMAP;
 }
 
