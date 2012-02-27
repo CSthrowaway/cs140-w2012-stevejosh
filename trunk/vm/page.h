@@ -17,8 +17,8 @@ struct page_table_entry
     void* vaddr;                  /* Base virtual address of this page. */
     struct frame* frame;          /* Pointer to this page's frame element. */
     struct thread* thread;        /* Pointer to the relevant thread
-				     containing the current page directory
-				     and page table. */
+                                     containing the current page directory
+                                     and page table. */
   };
 
 /* page_table defines the supplemental page table contained in each process.

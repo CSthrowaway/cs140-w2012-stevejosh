@@ -10,12 +10,14 @@
 #include "vm/swap.h"
 
 static struct list frames_allocated;
+static struct lock frame_lock;
 
 /* NOTE : Gets called by syscall_init in syscall.c. */
 void
 frame_init (void)
 {
   list_init (&frames_allocated);
+  lock_init (&frame_lock);
 }
 
 #include "lib/stdio.h"
@@ -43,47 +45,6 @@ frame_free (struct frame *frame)
   free (frame);
 }
 
-/* Evict the given frame, returning the (now free) physical page that the
-   frame was occyping. Will write the frame to swap or file if necessary. */
-static void*
-frame_page_out (struct frame *frame)
-{
-  ASSERT(IS_FRAME_PINNED(frame->status) == false);
-  void* paddr = frame->paddr;
-  
-  // Determine if there is dirty data to write out
-  bool isDirty = false;
-  struct list_elem *e;
-  for (e = list_begin (&frame->users); e != list_end (&frame->users); e = list_next (e))
-    {
-      struct page_table_entry *p = list_entry (e, struct page_table_entry, l_elem);
-      uint32_t* pagedir = p->thread->pagedir;
-      
-      isDirty |= pagedir_is_dirty (pagedir, p->vaddr);
-    }
-  // Write out dirty data
-  if (isDirty)
-    {
-      if (IS_FRAME_SWAP(frame->status))
-	{
-	  swapid_t id = swap_alloc();
-	  swap_write(id, frame->paddr);
-	  frame->aux1 = id;
-	}
-      else if (IS_FRAME_MMAP(frame->status))
-	{
-	  int fd = process_get_mmap_fd (frame->aux1);
-	  fd_seek (fd, frame->aux2);
-	  fd_write (fd, frame->paddr, PGSIZE);
-	}
-    }
-  // remove from allocated list
-  list_remove (&frame->elem);
-  // mark physical address of evicted page as empty
-  frame->paddr = NULL;
-  return paddr;
-}
-
 /* Load the given frame's data into physical memory. The method of doing so
    depends on whether the frame is zeroed, swapped, or mmapd. */
 static void
@@ -92,12 +53,14 @@ frame_load_data (struct frame *frame)
   if (frame->status & FRAME_ZERO)
     memset (frame->paddr, 0, PGSIZE);
   else if (frame->status & FRAME_SWAP)
-    swap_read (frame->aux1, frame->paddr);
+    {
+      swap_read (frame->aux1, frame->paddr);
+      swap_free (frame->aux1);
+    }
   else if (frame->status & FRAME_MMAP)
     {
       int fd = process_get_mmap_fd (frame->aux1);
       ASSERT (fd >= 0);
-      int file_size = fd_filesize (fd);
 
       /* Determine the proper number of bytes to read from the file.
          The remainder of the page should be zeroed. */ 
@@ -113,36 +76,111 @@ frame_load_data (struct frame *frame)
     }
 }
 
-/* Chooses a frame to evict from the frames_allocated list. Evicts the first non accessed page. */
-static struct frame*
-frame_choose_eviction ()
+static void
+frame_save_data (struct frame *frame)
 {
-  struct list_elem *f;
-  struct list_elem *p;
-  // look through frames
-  for (f = list_begin (&frames_allocated); f != list_end (&frames_allocated); f = list_next (f))
+  if (frame->status & FRAME_SWAP)
+  	{
+      swapid_t id = swap_alloc ();
+      swap_write (id, frame->paddr);
+      frame->aux1 = id;
+  	}
+  else if (frame->status & FRAME_MMAP)
     {
-      struct frame *cur = list_entry (f, struct frame, elem);
-      bool isAccessed = false;
-      // determines if any pages referencing current frame have recently
-      // accessed the frame. Clears accessed reference bits as it goes
-      for (p = list_begin (&cur->users); p != list_end (&cur->users); p = list_next (p))
-	{
-	  struct page_table_entry *page = list_entry (p, struct page_table_entry, l_elem);
-	  uint32_t* pagedir = page->thread->pagedir;
-	  if (pagedir_is_accessed (pagedir, page->vaddr))
-	    {
-	      isAccessed = true;
-	      pagedir_set_accessed (pagedir, page->vaddr, false);
-	    }
-	}
-      // If this frame was not accessed recently, then evict it
-      if (!isAccessed)
-	{
-	  return cur;
-	}
+      int fd = process_get_mmap_fd (frame->aux1);
+      fd_seek (fd, frame->aux2);
+      fd_write (fd, frame->paddr, PGSIZE);
     }
-  return NULL;
+}
+
+/* Evict the given frame, returning the (now free) physical page that the
+   frame was occyping. Will write the frame to swap or file if necessary. */
+static void*
+frame_page_out (struct frame *frame)
+{
+  ASSERT (!(frame->status & FRAME_PINNED));
+  
+  bool is_dirty = false;
+
+  /* Iterate through all supplemental page table entries that are using this
+     frame, checking to see whether or not they have caused the frame to be
+     dirtied. */
+  struct list_elem *e;
+  for (e = list_begin (&frame->users);
+       e != list_end (&frame->users);
+       e = list_next (e))
+    {
+      struct page_table_entry *p = list_entry (e, struct page_table_entry,
+                                               l_elem);
+      is_dirty |= pagedir_is_dirty (p->thread->pagedir, p->vaddr);
+    }
+
+  if (is_dirty)
+    frame_save_data (frame);
+
+  void* paddr = frame->paddr;
+  frame->paddr = NULL;
+  return paddr;
+}
+
+/* Checks all virtual pages that are using this virtual frame to see if they
+   have accessed the page since we last checked. Returns true if any of them
+   have accessed this frame. Also resets all accessed flags for this frame. */
+static bool
+frame_was_accessed (struct frame *frame)
+{
+  bool accessed = false;
+  struct list_elem *p;
+  for (p = list_begin (&frame->users);
+       p != list_end (&frame->users);
+       p = list_next (p))
+    {
+      struct page_table_entry *pte = list_entry (p, struct page_table_entry,
+                                                 l_elem);
+      if (pagedir_is_accessed (pte->thread->pagedir, pte->vaddr))
+        {
+          accessed = true;
+          pagedir_set_accessed (pte->thread->pagedir, pte->vaddr, false);
+        }
+    }
+  return accessed;
+}
+
+// TODO TODO TODO TODO IMPLEMENT CLOCK ALGORITHM
+/* Chooses a frame to evict from the frames_allocated list, removing the
+   frame from the list in the process. Synchronized with the frame lock, so
+   that other processes don't try to evict it in the mean time.
+   Evicts the first non accessed page. */
+static struct frame*
+frame_choose_eviction (void)
+{
+  lock_acquire (&frame_lock);
+  struct frame *chosen = NULL;
+  struct list_elem *f;
+
+  for (f = list_begin (&frames_allocated);
+       f != list_end (&frames_allocated);
+       f = list_next (f))
+    {
+      struct frame *frame = list_entry (f, struct frame, elem);
+      if (!frame_was_accessed (frame) && !(frame->status & FRAME_PINNED))
+        {
+          chosen = frame;
+          break;
+        }
+    }
+
+  /* If we weren't able to find a frame to evict, just pick the
+     first in the allocated list. */
+  if (chosen == NULL)    
+    chosen = list_entry (list_begin (&frames_allocated), struct frame, elem);
+
+  /* Remove the frame from the allocated frames list and release the frame
+     lock. Once we take it off of the list, we're safe from someone else
+     trying to grab it. */
+  list_remove (&chosen->elem);
+  lock_release (&frame_lock);
+  return chosen;
 }
 
 /* Force the given frame into physical memory, acquiring a physical frame
@@ -153,16 +191,21 @@ frame_page_in (struct frame *frame)
   ASSERT (frame->paddr == NULL);
   
   void *page = palloc_get_page (PAL_USER);
+
+  /* If we weren't able to allocated a new page, we'll have to evict an
+     existing frame and steal its physical memory. */
   if (page == NULL)
     {
-      struct frame* frameToEvict = frame_choose_eviction();
-      void* paddr = frame_page_out (frameToEvict);
-      if (paddr == NULL)
-	PANIC ("Could not choose a frame to evict");
-      page = paddr;
+      struct frame* frame_to_evict = frame_choose_eviction();
+      void* paddr = frame_page_out (frame_to_evict);
+	    page = paddr;
     }
+
   frame->paddr = page;
+  
+  lock_acquire (&frame_lock);
   list_push_back (&frames_allocated, &frame->elem);
+  lock_release (&frame_lock);
 
   frame_load_data (frame);
 }
