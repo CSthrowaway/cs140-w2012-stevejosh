@@ -5,6 +5,7 @@
 #include "threads/vaddr.h"
 #include "userprog/process.h"
 #include "userprog/syscall.h"
+#include "userprog/pagedir.h"
 #include "vm/frame.h"
 #include "vm/swap.h"
 
@@ -44,11 +45,41 @@ frame_free (struct frame *frame)
 
 /* Evict the given frame, returning the (now free) physical page that the
    frame was occyping. Will write the frame to swap or file if necessary. */
-UNUSED static void*
-frame_page_out (struct frame *frame UNUSED)
+static void*
+frame_page_out (struct frame *frame)
 {
+  ASSERT(IS_FRAME_PINNED(frame->status) == false);
   void* paddr = frame->paddr;
-  // TODO: EVICT THAT SON OF A BITCH
+  
+  // Determine if there is dirty data to write out
+  bool isDirty = false;
+  struct list_elem *e;
+  for (e = list_begin (&frame->users); e != list_end (&frame->users); e = list_next (e))
+    {
+      struct page_table_entry *p = list_entry (e, struct page_table_entry, l_elem);
+      uint32_t* pagedir = p->thread->pagedir;
+      
+      isDirty |= pagedir_is_dirty (pagedir, p->vaddr);
+    }
+  // Write out dirty data
+  if (isDirty)
+    {
+      if (IS_FRAME_SWAP(frame->status))
+	{
+	  swapid_t id = swap_alloc();
+	  swap_write(id, frame->paddr);
+	  frame->aux1 = id;
+	}
+      else if (IS_FRAME_MMAP(frame->status))
+	{
+	  int fd = process_get_mmap_fd (frame->aux1);
+	  fd_seek (fd, frame->aux2);
+	  fd_write (fd, frame->paddr, PGSIZE);
+	}
+    }
+  // remove from allocated list
+  list_remove (&frame->elem);
+  // mark physical address of evicted page as empty
   frame->paddr = NULL;
   return paddr;
 }
@@ -82,6 +113,38 @@ frame_load_data (struct frame *frame)
     }
 }
 
+/* Chooses a frame to evict from the frames_allocated list. Evicts the first non accessed page. */
+static struct frame*
+frame_choose_eviction ()
+{
+  struct list_elem *f;
+  struct list_elem *p;
+  // look through frames
+  for (f = list_begin (&frames_allocated); f != list_end (&frames_allocated); f = list_next (f))
+    {
+      struct frame *cur = list_entry (f, struct frame, elem);
+      bool isAccessed = false;
+      // determines if any pages referencing current frame have recently
+      // accessed the frame. Clears accessed reference bits as it goes
+      for (p = list_begin (&cur->users); p != list_end (&cur->users); p = list_next (p))
+	{
+	  struct page_table_entry *page = list_entry (p, struct page_table_entry, l_elem);
+	  uint32_t* pagedir = page->thread->pagedir;
+	  if (pagedir_is_accessed (pagedir, page->vaddr))
+	    {
+	      isAccessed = true;
+	      pagedir_set_accessed (pagedir, page->vaddr, false);
+	    }
+	}
+      // If this frame was not accessed recently, then evict it
+      if (!isAccessed)
+	{
+	  return cur;
+	}
+    }
+  return NULL;
+}
+
 /* Force the given frame into physical memory, acquiring a physical frame
    for it as well as loading its data from the appropriate location. */
 void
@@ -92,8 +155,11 @@ frame_page_in (struct frame *frame)
   void *page = palloc_get_page (PAL_USER);
   if (page == NULL)
     {
-      // TODO : Evict somebody and set page to be their old page.
-      PANIC ("frame_page_in: eviction not yet implemented");
+      struct frame* frameToEvict = frame_choose_eviction();
+      void* paddr = frame_page_out (frameToEvict);
+      if (paddr == NULL)
+	PANIC ("Could not choose a frame to evict");
+      page = paddr;
     }
   frame->paddr = page;
   list_push_back (&frames_allocated, &frame->elem);

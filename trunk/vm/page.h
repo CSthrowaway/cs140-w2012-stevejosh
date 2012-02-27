@@ -2,6 +2,7 @@
 #define VM_PAGE_H
 
 #include "lib/kernel/hash.h"
+#include "threads/thread.h"
 #include "threads/synch.h"
 #include "vm/frame.h"
 
@@ -15,6 +16,9 @@ struct page_table_entry
     struct list_elem l_elem;      /* For wiring into a frame's user list. */
     void* vaddr;                  /* Base virtual address of this page. */
     struct frame* frame;          /* Pointer to this page's frame element. */
+    struct thread* thread;        /* Pointer to the relevant thread
+				     containing the current page directory
+				     and page table. */
   };
 
 /* page_table defines the supplemental page table contained in each process.
