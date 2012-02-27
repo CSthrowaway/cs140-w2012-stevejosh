@@ -24,6 +24,7 @@
 #define IS_FRAME_READONLY(x) ((x) & FRAME_READONLY)
 
 typedef uint32_t frame_status;
+typedef int mmapid_t;
 
 typedef void* frame;
 
@@ -39,9 +40,6 @@ struct frame
                                        physical frame (will usually be a
                                        single page). */
   };
-
-// TODO REMOVE THIS
-typedef uint32_t mmapid_t;
 
 void frame_init (void);
 struct frame *frame_alloc (void);

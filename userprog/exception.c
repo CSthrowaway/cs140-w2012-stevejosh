@@ -155,9 +155,6 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  /* To implement virtual memory, delete the rest of the function
-     body, and replace it with code that brings in the page to
-     which fault_addr refers. */
   if (user)
     {
       struct page_table_entry *entry =
@@ -165,8 +162,6 @@ page_fault (struct intr_frame *f)
 
       if (entry == NULL)
         {
-          printf ("Segmentation fault at %p. Terminating process.\n",
-                  fault_addr);
           process_release (-1);
           thread_exit ();
         }
