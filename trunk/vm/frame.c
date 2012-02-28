@@ -79,6 +79,14 @@ frame_load_data (struct frame *frame)
 static void
 frame_save_data (struct frame *frame)
 {
+  /* If the frame started out as zero-filled page and was modified, we
+     change it to be a swap page (since it is no longer all zeroes. */
+  if (frame->status & FRAME_ZERO)
+    {
+      frame->status &= ~FRAME_ZERO;
+      frame->status &= FRAME_SWAP;
+    }
+
   if (frame->status & FRAME_SWAP)
   	{
       swapid_t id = swap_alloc ();
@@ -113,6 +121,7 @@ frame_page_out (struct frame *frame)
       struct page_table_entry *p = list_entry (e, struct page_table_entry,
                                                l_elem);
       is_dirty |= pagedir_is_dirty (p->thread->pagedir, p->vaddr);
+      page_table_entry_deactivate (p);
     }
 
   if (is_dirty)

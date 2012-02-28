@@ -1,3 +1,4 @@
+#include "userprog/pagedir.h"
 #include "threads/malloc.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
@@ -87,4 +88,26 @@ page_table_add_entry (struct page_table *ptable, void* vaddr,
   return entry;
 }
 
-//success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
+/* Given a supplemental page table entry that contains an active frame, install
+   the physical frame in the corresponding thread's hardware page table, making
+   the supplemental page table entry active. */
+void
+page_table_entry_activate (struct page_table_entry *pte)
+{
+  ASSERT (pte->frame->paddr != NULL);
+  pagedir_set_page (pte->thread->pagedir,
+                    pte->vaddr,
+                    pte->frame->paddr,
+                    !(pte->frame->status & FRAME_READONLY));
+}
+
+/* Given a supplemental page table entry that contains an active frame,
+   uninstall the physical frame from the corresponding thread's hardware page
+   table, such that subsequent accesses to the page given by pte->vaddr will
+   fault. */
+void
+page_table_entry_deactivate (struct page_table_entry *pte)
+{
+  ASSERT (pte->frame->paddr != NULL);
+  pagedir_clear_page (pte->thread->pagedir, pte->vaddr);
+}

@@ -41,4 +41,7 @@ struct page_table_entry*
 page_table_add_entry (struct page_table *ptable, void* vaddr,
                       struct frame *frame);
 
+void page_table_entry_activate (struct page_table_entry *pte);
+void page_table_entry_deactivate (struct page_table_entry *pte);
+
 #endif
