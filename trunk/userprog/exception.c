@@ -157,13 +157,28 @@ page_fault (struct intr_frame *f)
 
   if (user)
     {
+      struct page_table *pt = thread_current ()->page_table;
       struct page_table_entry *entry =
-        page_table_lookup (thread_current ()->page_table, fault_addr);
+        page_table_lookup (pt, fault_addr);
 
       if (entry == NULL)
         {
-          process_release (-1);
-          thread_exit ();
+          if (fault_addr <= (void*)((char *)f->esp - 32))
+            {
+              struct frame *frame = frame_alloc ();
+              frame_set_zero (frame);
+              frame_page_in (frame);
+              struct page_table_entry *pte =
+                page_table_add_entry (pt,
+                                      pg_round_down (fault_addr),
+                                      frame);
+              page_table_entry_activate (pte);
+            }
+          else
+            {
+              process_release (-1);
+              thread_exit ();
+            }
         }
 
       frame_page_in (entry->frame);
