@@ -53,11 +53,11 @@ page_table_free (struct page_table *ptable)
    page_table_entry which owns the page that contains the address. Returns
    NULL if the virtual address is unmapped. */
 struct page_table_entry*
-page_table_lookup (struct page_table *ptable, void* vaddr)
+page_table_lookup (struct page_table *ptable, const void* vaddr)
 {
   vaddr = pg_round_down (vaddr);
   struct page_table_entry e;
-  e.vaddr = vaddr;
+  e.vaddr = (void *)vaddr;
   
   struct hash_elem *found;
   found = hash_find (&ptable->table, &e.h_elem);
@@ -68,10 +68,21 @@ page_table_lookup (struct page_table *ptable, void* vaddr)
   return hash_entry (found, struct page_table_entry, h_elem);
 }
 
+
+/* Look up the given virtual address in the given page table, returning either
+   the address (if it exists inside the page table), or NULL if the address
+   is not contained in any virtual page in the page table. */   
+void*
+page_table_translate (struct page_table *ptable, const void* vaddr)
+  {
+    struct page_table_entry *pte = page_table_lookup (ptable, vaddr);
+    return (pte == NULL ) ? NULL : vaddr;
+  }
+
 /* NOTE : Assumes that synchronization has already been taken care of (e.g.,
           the caller has already acquired this page table's lock. */
 struct page_table_entry*
-page_table_add_entry (struct page_table *ptable, void* vaddr,
+page_table_add_entry (struct page_table *ptable, const void* vaddr,
                       struct frame *frame)
 {
   ASSERT (vaddr == pg_round_down (vaddr));
@@ -80,7 +91,7 @@ page_table_add_entry (struct page_table *ptable, void* vaddr,
   if (entry == NULL)
     PANIC ("page_table_add_entry: unable to allocate page table entry");
 
-  entry->vaddr = vaddr;
+  entry->vaddr = (void *)vaddr;
   entry->frame = frame;
   entry->thread = thread_current ();
   hash_insert (&ptable->table, &entry->h_elem);
@@ -110,4 +121,14 @@ page_table_entry_deactivate (struct page_table_entry *pte)
 {
   ASSERT (pte->frame->paddr != NULL);
   pagedir_clear_page (pte->thread->pagedir, pte->vaddr);
+}
+
+void
+page_table_entry_load (struct page_table_entry *pte)
+{
+  if (pte->frame->paddr == NULL)
+    {
+      frame_page_in (pte->frame);
+      page_table_entry_activate (pte);
+    }
 }
