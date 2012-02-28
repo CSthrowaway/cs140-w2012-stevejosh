@@ -17,8 +17,8 @@ int process_wait (tid_t);
 void process_exit (void);
 void process_activate (void);
 
-int process_add_mmap_from_name (const char *file_name);
-int process_add_mmap_from_fd (int fd);
+mmapid_t process_add_mmap_from_name (const char *file_name);
+mmapid_t process_add_mmap_from_fd (int fd);
 int process_get_mmap_fd (mmapid_t mapid);
 
 #endif /* userprog/process.h */

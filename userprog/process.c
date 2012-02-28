@@ -503,7 +503,7 @@ process_activate (void)
 
 /* Opens a new file from file_name and stores the file descriptor into the
    current thread's mmapid. */
-int
+mmapid_t
 process_add_mmap_from_name (const char *file_name)
 {
   int fd = fd_open (file_name);
@@ -524,7 +524,7 @@ process_add_mmap_from_name (const char *file_name)
   return mapid;
 }
 
-int 
+mmapid_t
 process_add_mmap_from_fd (int fd)
 {
   return process_add_mmap_from_name (filesys_get_filename_from_fd (fd));
@@ -618,7 +618,7 @@ struct Elf32_Phdr
 
 static bool setup_stack (void **esp);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
-static bool load_segment (struct file *file, mmapid_t mmapid, off_t ofs, uint8_t *upage,
+static bool load_segment (mmapid_t mmapid, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
                           bool writable);
 
@@ -717,7 +717,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
                   zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
                 }
               
-              if (!load_segment (file, mmapid, file_page, (void *) mem_page,
+              if (!load_segment (mmapid, file_page, (void *) mem_page,
                                  read_bytes, zero_bytes, writable))
                 goto done;
               //hex_dump (mem_page, mem_page, read_bytes + zero_bytes, true);
@@ -745,10 +745,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
   file_close (file);
   return success;
 }
-
-/* load() helpers. */
-
-static bool install_page (void *upage, void *kpage, bool writable);
 
 /* Checks whether PHDR describes a valid, loadable segment in
    FILE and returns true if so, false otherwise. */
@@ -810,7 +806,7 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
    Return true if successful, false if a memory allocation error
    or disk read error occurs. */
 static bool
-load_segment (struct file *file, mmapid_t mmapid, off_t ofs, uint8_t *upage,
+load_segment (mmapid_t mmapid, off_t ofs, uint8_t *upage,
               uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
 {
   ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
@@ -901,37 +897,16 @@ load_segment (struct file *file, mmapid_t mmapid, off_t ofs, uint8_t *upage,
 static bool
 setup_stack (void **esp) 
 {
-  uint8_t *kpage;
-  bool success = false;
-
-  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
-  if (kpage != NULL) 
-    {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-      if (success)
-        *esp = PHYS_BASE;
-      else
-        palloc_free_page (kpage);
-    }
-  return success;
-}
-
-/* Adds a mapping from user virtual address UPAGE to kernel
-   virtual address KPAGE to the page table.
-   If WRITABLE is true, the user process may modify the page;
-   otherwise, it is read-only.
-   UPAGE must not already be mapped.
-   KPAGE should probably be a page obtained from the user pool
-   with palloc_get_page().
-   Returns true on success, false if UPAGE is already mapped or
-   if memory allocation fails. */
-static bool
-install_page (void *upage, void *kpage, bool writable)
-{
-  struct thread *t = thread_current ();
-
-  /* Verify that there's not already a page at that virtual
-     address, then map our page there. */
-  return (pagedir_get_page (t->pagedir, upage) == NULL
-          && pagedir_set_page (t->pagedir, upage, kpage, writable));
+  /* Create a new zero-filled frame, load it into memory, then attach it to
+     the running thread's page table. */
+  struct frame *frame = frame_alloc ();
+  frame_set_zero (frame);
+  frame_page_in (frame);
+  struct page_table_entry *pte =
+    page_table_add_entry (thread_current ()->page_table,
+                          ((uint8_t *) PHYS_BASE) - PGSIZE,
+                          frame);
+  page_table_entry_activate (pte);
+  *esp = PHYS_BASE;
+  return true;
 }
