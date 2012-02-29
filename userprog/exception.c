@@ -163,16 +163,16 @@ page_fault (struct intr_frame *f)
 
       if (entry == NULL)
         {
-          if (fault_addr <= (void*)((char *)f->esp - 32))
+          if (fault_addr < PHYS_BASE &&
+              fault_addr >= (void*)((char *)f->esp - 32))
             {
               struct frame *frame = frame_alloc ();
               frame_set_zero (frame);
-              frame_page_in (frame);
               struct page_table_entry *pte =
                 page_table_add_entry (pt,
                                       pg_round_down (fault_addr),
                                       frame);
-              page_table_entry_activate (pte);
+              page_table_entry_load (pte);
             }
           else
             {
@@ -180,10 +180,12 @@ page_fault (struct intr_frame *f)
               thread_exit ();
             }
         }
-
-      frame_page_in (entry->frame);
-      ASSERT (entry->frame->paddr != NULL);
-      page_table_entry_activate (entry);
+      else
+        {
+          frame_page_in (entry->frame);
+          ASSERT (entry->frame->paddr != NULL);
+          page_table_entry_activate (entry);
+        }
     }
   else
   {  

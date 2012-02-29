@@ -348,10 +348,12 @@ validate_buffer (const char *buffer, unsigned size)
 {
   if (size == 0) return buffer;
 
+  struct page_table *pt = thread_current ()->page_table;
+
   /* Try to translate the first address of the buffer. If this fails, we
      know it's a bad buffer. */
-  const char *pos = translate_vaddr(buffer);
-  if (pos == NULL) return NULL;
+  void *translated = page_table_translate (pt, (const void *)buffer);
+  if (translated == NULL) return NULL;
 
   const char *next = buffer;
 
@@ -365,12 +367,17 @@ validate_buffer (const char *buffer, unsigned size)
     {
       unsigned offset = (size - i - 1);
       next += (offset < PGSIZE) ? offset : PGSIZE;
-      if (translate_vaddr (next) == NULL) return NULL;      
+      void *test = page_table_translate (pt, (const void* )next);
+      if (test == NULL) return NULL;
+      page_table_entry_load (page_table_lookup (pt, (const void *)next));
     }
 
+  // TODO TODO TODO TODO TODO TODO REMOVE THIS HACK (page_table_entry_load);
+  
   /* Looks like the whole buffer exists, so we can return the trnaslated
      beginning pointer. */
-  return pos;
+  page_table_entry_load (page_table_lookup (pt, (const void *)buffer));
+  return translated;
 }
 
 /* -- System Call #0 --
