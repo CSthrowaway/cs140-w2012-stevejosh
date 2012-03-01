@@ -19,10 +19,9 @@ void process_activate (void);
 
 mmapid_t process_add_mmap_from_name (const char *file_name);
 mmapid_t process_add_mmap_from_fd (int fd);
+void process_remove_mmap (mmapid_t mapid);
 int process_get_mmap_fd (mmapid_t mapid);
-bool check_mmap_pages_available (uint32_t vaddr, uint32_t finalAddress);
-bool process_create_mmap_pages (int mmapid, void* vaddr);
-void process_write_mmap_to_file (mapid_t mapping);
-void process_remove_mmap_pages (mapid_t mapping);
 
+bool process_create_mmap_pages (mmapid_t mmapid, void *vaddr);
+void process_write_mmap_to_file (mapid_t mapping);
 #endif /* userprog/process.h */

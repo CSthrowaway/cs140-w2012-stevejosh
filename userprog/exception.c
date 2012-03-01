@@ -175,13 +175,13 @@ page_fault (struct intr_frame *f)
               page_table_entry_load (pte);
             }
           else
-            {
-              process_release (-1);
-              thread_exit ();
-            }
+            goto kill_silent;
         }
       else
         {
+          if ((entry->frame->status & FRAME_READONLY) && write)
+            goto kill_silent;
+
           frame_page_in (entry->frame);
           ASSERT (entry->frame->paddr != NULL);
           page_table_entry_activate (entry);
@@ -196,5 +196,11 @@ page_fault (struct intr_frame *f)
             user ? "user" : "kernel");
     kill (f);
   }
+  
+  return;
+
+kill_silent:
+  process_release (-1);
+  thread_exit ();
 }
 

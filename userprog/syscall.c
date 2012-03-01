@@ -719,24 +719,27 @@ syscall_close (int fd)
    Maps the file open as fd into consecutive virtual pages of the current
    process starting at addr. */
 static mapid_t
-syscall_mmap (int fd, void *addr)
+syscall_mmap (int fd, void *vaddr)
 {
-  if (addr == 0 || fd < 2 || ((int)addr) % PGSIZE != 0)
-    return -1;
+  if (vaddr >= PHYS_BASE || fd < 2 || (pg_round_down (vaddr) != vaddr)) return -1;
+
   int id = process_add_mmap_from_fd (fd);
-  // perform actual mapping
-  if (!process_create_mmap_pages(id, addr))
-    return -1;
+  if (id < 0) return -1;
+
+  if (!process_create_mmap_pages (id, vaddr))
+    {
+      // TODO : Remove the mmap from the process mmap table
+      return -1;
+    }
   return id;
 }
 
 /* -- System Call #14 --
    Unmaps the mapping designated by mapping. */
 static void
-syscall_munmap (mapid_t mapping)
+syscall_munmap (mapid_t mapid)
 {
-  // write out information to file
-  process_write_mmap_to_file(mapping);
+  process_remove_mmap (mapid);
 }
 
 
@@ -822,18 +825,18 @@ syscall_handler (struct intr_frame *f)
       break;
     case SYS_TELL:
       ret = true;
-      ret_val = syscall_tell((int)arg[0]);
+      ret_val = syscall_tell ((int)arg[0]);
       break;
     case SYS_CLOSE:      
       syscall_close ((int)arg[0]);
       break;
     case SYS_MMAP:
       ret = true;
-      ret_val = syscall_mmap((int)arg[0],(void*)arg[1]);      
+      ret_val = syscall_mmap ((int)arg[0], (void*)arg[1]);      
       break;
     case SYS_MUNMAP:
       ret = false;
-      syscall_munmap((mapid_t)arg[0]);
+      syscall_munmap ((mapid_t)arg[0]);
       break;
   }
  

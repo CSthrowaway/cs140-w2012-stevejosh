@@ -32,9 +32,9 @@ struct frame
   {
     void *paddr;                    /* Physical address of this frame. */
     frame_status status;
-    uint32_t aux1;
-    uint32_t aux2;
-    uint32_t aux3;
+    uint32_t aux1;                  /* Swap slot OR mmapid. */
+    uint32_t aux2;                  /* mmap file offset. */
+    uint32_t aux3;                  /* mmap read bytes. */
     struct list_elem elem;          /* List element for allocated list. */
     struct list users;              /* List of all virtual pages using this
                                        physical frame (will usually be a
@@ -45,6 +45,7 @@ void frame_init (void);
 struct frame *frame_alloc (void);
 void frame_free (struct frame *frame);
 void frame_page_in (struct frame *frame);
+void frame_page_out (struct frame *frame);
 
 void frame_set_attribute (struct frame *frame, uint32_t attribute, bool on);
 
