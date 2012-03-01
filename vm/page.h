@@ -38,12 +38,15 @@ struct page_table_entry*
 page_table_lookup (struct page_table *ptable, const void* vaddr);
 void* page_table_translate (struct page_table *ptable, const void* vaddr);
 
-struct page_table_entry*
+struct page_table_entry* 
 page_table_add_entry (struct page_table *ptable, const void* vaddr,
                       struct frame *frame);
+
+void page_table_remove_entry (struct page_table_entry *pte);
 
 void page_table_entry_activate (struct page_table_entry *pte);
 void page_table_entry_deactivate (struct page_table_entry *pte);
 void page_table_entry_load (struct page_table_entry *pte);
+
 
 #endif

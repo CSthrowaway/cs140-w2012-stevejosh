@@ -721,8 +721,12 @@ syscall_close (int fd)
 static mapid_t
 syscall_mmap (int fd, void *addr)
 {
+  if (addr == 0 || fd < 2 || ((int)addr) % PGSIZE != 0)
+    return -1;
   int id = process_add_mmap_from_fd (fd);
   // perform actual mapping
+  if (!process_create_mmap_pages(id, addr))
+    return -1;
   return id;
 }
 
@@ -731,8 +735,8 @@ syscall_mmap (int fd, void *addr)
 static void
 syscall_munmap (mapid_t mapping)
 {
-  struct thread* t = thread_current ();
-  // search t for mapping and remove it
+  // write out information to file
+  process_write_mmap_to_file(mapping);
 }
 
 

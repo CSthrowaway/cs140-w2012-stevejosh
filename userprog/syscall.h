@@ -7,6 +7,8 @@ void filesys_free_open_files (struct thread *t);
 const char* filesys_get_filename_from_fd (int fd);
 void syscall_init (void);
 int syscall_open (const char *file);
+//int lock_filesys (void);
+//int unlock_filesys (void);
 
 int fd_open (const char *file);
 int fd_read (int fd, void *buffer, unsigned size);
