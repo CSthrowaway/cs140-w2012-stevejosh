@@ -506,6 +506,8 @@ process_activate (void)
 mmapid_t
 process_add_mmap_from_name (const char *file_name)
 {
+  if (file_name == NULL)
+    return -1;
   int fd = fd_open (file_name);
   
   /* Return error if we failed to open. */
@@ -550,6 +552,118 @@ process_get_mmap_fd (mmapid_t mapid)
     }
     
   return -1;
+}
+
+/* Walks through the beginning of each page address between vaddr and
+   finalAddress (inclusive) and checks to make sure there are no
+   supplementary page table entries. */
+bool
+check_mmap_pages_available (uint32_t vaddr, uint32_t finalAddress)
+{
+  struct page_table* pageTable = thread_current ()->page_table;
+  // check to make sure all pages are not already used
+  for (; vaddr < finalAddress; vaddr += PGSIZE)
+    {
+      // make sure no page table entry already exists for current page
+      if (page_table_lookup (pageTable, (void*) vaddr) == NULL)
+	  return false;
+    }
+  return true;
+}
+
+/* Attempts to create the supplementary page table entry for all the
+   required pages for mapping mmapid starting at virtual address
+   vaddr. Returns false if failed. */
+bool
+process_create_mmap_pages (int mmapid, void* vaddr)
+{
+  int fd = process_get_mmap_fd (mmapid);
+  if (fd == -1)
+    return false;
+  struct page_table* pageTable = thread_current () ->page_table;
+  uint32_t currentVirtual = (uint32_t) vaddr;
+  uint32_t finalAddress = currentVirtual + fd_filesize (fd);
+  // can fail for files with zero bytes
+  if (finalAddress == currentVirtual)
+    return false;
+  lock_acquire (&pageTable->lock);
+  // ensure all required pages are available
+  if (!check_mmap_pages_available (currentVirtual, finalAddress))
+    {
+      lock_release (&pageTable->lock);
+      return false;
+    }  
+  // create new supplementary page table entry for each required page
+  int bytesToRead;
+  for (currentVirtual = (uint32_t) vaddr; currentVirtual < finalAddress;
+       currentVirtual += PGSIZE)
+    {
+      struct frame* newFrame = frame_alloc ();
+      // Get offset into file and how much of current block contains file
+      int offset = currentVirtual - (uint32_t) vaddr;
+      if (finalAddress - currentVirtual >= PGSIZE)
+	bytesToRead = PGSIZE;
+      else
+	bytesToRead = finalAddress - currentVirtual;
+      // Create the frame and supplementary page table entry
+      frame_set_mmap (newFrame, mmapid, offset, bytesToRead);
+      page_table_add_entry (pageTable, (void*) currentVirtual, newFrame);
+    }
+  lock_release (&pageTable->lock);
+  return true;
+}
+
+/* Writes out the memory mapped file to the file system. */
+void
+process_write_mmap_to_file(mapid_t mapping)
+{
+  int fd = process_get_mmap_fd (mapping);
+  if (fd <= 1) 
+    return;
+
+  struct page_table* pt = thread_current ()->page_table;
+  struct hash_iterator i;
+  hash_first(&i,& pt->table);
+  while (hash_next( &i))
+    {
+      struct page_table_entry* page = hash_entry (hash_cur (&i), struct
+					       page_table_entry, h_elem);
+      struct frame* f = page->frame;
+      if (IS_FRAME_MMAP(f->status))
+	{
+	  if (f->aux1 == (uint32_t)mapping)
+	    {
+	      uint32_t offset = f->aux2;
+	      uint32_t bytesToWrite = f->aux3;
+	      fd_seek (fd, offset);
+	      fd_write (fd, (void*) page->vaddr, bytesToWrite);
+	    }
+	}
+    }
+}
+
+/* Removes the mmap_table entry, and all the supplementary page table and
+   page table entries for the given mmap. */
+void 
+process_remove_mmap_pages (mapid_t mapping)
+{
+  struct page_table* pt = thread_current ()->page_table;
+  struct hash_iterator i;
+  hash_first(&i,& pt->table);
+  while (hash_next( &i))
+    {
+      struct page_table_entry* page = hash_entry (hash_cur (&i), struct
+					       page_table_entry, h_elem);
+      struct frame* f = page->frame;
+      if (IS_FRAME_MMAP(f->status))
+	{
+	  if (f->aux1 == (uint32_t) mapping)
+	    {
+	      page_table_remove_entry (page);
+	    }
+	}
+    }
+
 }
 
 
