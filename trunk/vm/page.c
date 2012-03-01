@@ -133,27 +133,23 @@ page_table_entry_load (struct page_table_entry *pte)
     }
 }
 
+void
+page_table_entry_clear (struct page_table_entry *pte)
+{
+  pagedir_clear_page (pte->thread->pagedir, pte->vaddr);
+  list_remove (&pte->l_elem);
+  if (list_empty (&pte->frame->users))
+    frame_free (pte->frame);
+    
+  pte->frame = NULL;
+  pte->vaddr = NULL;
+}
+
 /* Removes the given element from the page table. */
 void 
-page_table_remove_entry (struct page_table_entry *pte)
+page_table_entry_remove (struct page_table_entry *pte)
 {
   struct page_table* pt = pte->thread->page_table;
-  // remove from thread's supplementary page table
   hash_delete (&pt->table, &pte->h_elem);
-  // remove from actual page table
-  pagedir_clear_page(pte->thread->pagedir, pte->vaddr);
-  struct list* pageList = &pte->frame->users;
-  struct list_elem* e;
-  // remove page reference in frame
-  for (e = list_begin (pageList); e != list_end (pageList); 
-       e = list_next (e))
-    {
-      struct page_table_entry *f = list_entry (e, struct page_table_entry, l_elem);
-      if (f == pte)
-	list_remove(&f->l_elem);
-    }
-  // remove frame if this is the final page looking at it
-  // TODO: Does this also remove from lists?
-  if (list_empty (pageList))
-    frame_free (pte->frame);  
+  free (pte);
 }

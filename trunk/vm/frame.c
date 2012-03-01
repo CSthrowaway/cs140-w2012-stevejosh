@@ -37,6 +37,7 @@ frame_alloc (void)
 void
 frame_free (struct frame *frame)
 {
+  frame_page_out (frame);
   if (frame->paddr != NULL)
     {
       palloc_free_page (frame->paddr);
@@ -101,11 +102,13 @@ frame_save_data (struct frame *frame)
     }
 }
 
-/* Evict the given frame, returning the (now free) physical page that the
-   frame was occyping. Will write the frame to swap or file if necessary. */
-static void*
+/* Evict the given frame from physical memory. Will write the frame to swap or
+   file if necessary. The frame's physical memory gets freed via
+   palloc_free_page, and goes back into the user page pool. */
+void
 frame_page_out (struct frame *frame)
 {
+  if (frame->paddr == NULL) return;
   ASSERT (!(frame->status & FRAME_PINNED));
   
   bool is_dirty = false;
@@ -127,9 +130,10 @@ frame_page_out (struct frame *frame)
   if (is_dirty)
     frame_save_data (frame);
 
-  void* paddr = frame->paddr;
+  /* Remove the frame from the allocated frames list. */
+  list_remove (&frame->elem);
+  palloc_free_page (frame->paddr);
   frame->paddr = NULL;
-  return paddr;
 }
 
 /* Checks all virtual pages that are using this virtual frame to see if they
@@ -163,7 +167,6 @@ frame_was_accessed (struct frame *frame)
 static struct frame*
 frame_choose_eviction (void)
 {
-  lock_acquire (&frame_lock);
   struct frame *chosen = NULL;
   struct list_elem *f;
 
@@ -184,11 +187,6 @@ frame_choose_eviction (void)
   if (chosen == NULL)    
     chosen = list_entry (list_begin (&frames_allocated), struct frame, elem);
 
-  /* Remove the frame from the allocated frames list and release the frame
-     lock. Once we take it off of the list, we're safe from someone else
-     trying to grab it. */
-  list_remove (&chosen->elem);
-  lock_release (&frame_lock);
   return chosen;
 }
 
@@ -203,11 +201,14 @@ frame_page_in (struct frame *frame)
 
   /* If we weren't able to allocated a new page, we'll have to evict an
      existing frame and steal its physical memory. */
-  if (page == NULL)
+  while (page == NULL)
     {
-      struct frame* frame_to_evict = frame_choose_eviction();
-      void* paddr = frame_page_out (frame_to_evict);
-	    page = paddr;
+      // TODO : Fix synchro.
+      lock_acquire (&frame_lock);
+      struct frame* frame_to_evict = frame_choose_eviction ();
+      frame_page_out (frame_to_evict);
+      lock_release (&frame_lock);
+	    page = palloc_get_page (PAL_USER);
     }
 
   frame->paddr = page;
