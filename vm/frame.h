@@ -8,13 +8,15 @@
    bitfield. Some are mutually exclusive, such as FRAME_ZERO, FRAME_SWAP,
    and FRAME_FILE, while some may be mixed (for example, FRAME_SWAP,
    FRAME_PINNED, FRAME_RESIDENT may all be on at the same time). */
-#define FRAME_ZERO 0x1             /* Set when the frame is zero-filled. */
-#define FRAME_SWAP 0x2             /* Set when the frame is to be loaded and
+#define FRAME_ZERO      0x1        /* Set when the frame is zero-filled. */
+#define FRAME_SWAP      0x2        /* Set when the frame is to be loaded and
                                       saved to/from a swap slot. */
-#define FRAME_MMAP 0x4             /* Set when the frame is to be loaded and
+#define FRAME_MMAP      0x4        /* Set when the frame is to be loaded and
                                       saved to/from a file. */
-#define FRAME_PINNED 0x8           /* Set to protect frame from eviction. */
-#define FRAME_READONLY 0x10        /* Set when the frame is not writeable. */
+#define FRAME_PINNED    0x8        /* Set to protect frame from eviction. */
+#define FRAME_READONLY  0x10       /* Set when the frame is not writeable. */
+#define FRAME_CODE      0x20       /* Set when the frame came from a code
+                                      segment (hence cannot be written back). */
 
 typedef uint32_t frame_status;
 typedef int mmapid_t;

@@ -160,6 +160,7 @@ page_fault (struct intr_frame *f)
 
   if (entry == NULL)
     {
+      // TODO impose a stack growth limit
       void *esp = user ? f->esp : thread_current ()->esp;
       if (fault_addr < PHYS_BASE &&
           fault_addr >= (void*)((char *)esp - 32))
@@ -171,21 +172,21 @@ page_fault (struct intr_frame *f)
           page_table_entry_load (pte);
         }
       else {
-        //printf ("Killing because I have no entry at %p.\n", pg_round_down (fault_addr)); debug_backtrace ();
+        printf ("Death at %p. eip is %p\n", pg_round_down (fault_addr), f->eip);
         goto kill_silent;
       }
     }
   else
     {
-      //printf ("(%d) Faulting in %p. eip is %p\n", (int)page_fault_cnt, fault_addr, f->eip);
+      //printf ("(%d) Faulting in %p. eip is %p\n", (int)page_fault_cnt, pg_round_down (fault_addr), f->eip);
+      ASSERT (entry->frame->paddr == NULL);
       if ((entry->frame->status & FRAME_READONLY) && write)
         goto kill_silent;
-      
-      frame_page_in (entry->frame);
-      ASSERT (entry->frame->paddr != NULL);
-      page_table_entry_activate (entry);
+
+      page_table_entry_load (entry);
     }
 
+  //printf ("leaving.\n");
 /*  else
   {  
     printf ("Page fault at %p: %s error %s page in %s context.\n",
