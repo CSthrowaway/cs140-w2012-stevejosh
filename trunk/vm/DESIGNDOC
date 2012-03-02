@@ -107,12 +107,10 @@ management of pages and frames quite conceptually simple.
 >> evicted.  Describe your code for choosing a frame to evict.
 
 When we want to evict a frame (frame_choose_eviction) we iterate through
-the frames_allocated list starting from our globally stored cursor (TODO
-cursor) and wrapping around the end into the front. We evict the first
+the frames_allocated list starting from our globally stored cursor
+and wrapping around the end into the front. We evict the first
 frame which was not accessed by any pages pointing at it and is not
-pinned. If we do a complete loop around the list and do not find any non
-accessed frame we evict the first frame which is not pinned (TODO make
-sure frame is not pinned). As we check each frame's page for whether it
+pinned. As we check each frame's page for whether it
 has been accessed we reset the accessed bit to be not accessed. This
 algorithm is equivalent to the clock algorithm.
 
@@ -127,12 +125,20 @@ process's page table is also removed. Then when a page in process P uses
 the physical memory that Q was previously using it updates it's frame
 structure to point to that physical memory. and adds itself to the
 frames_allocated list. The supplementary page table does not need to be
-updated (unless the page is has not been accessed before in which case the
-page_table_entry is added and a new frame is created).
+updated (unless the page has not been accessed before in which case the
+page_table_entry is added and a new frame is created). 
 
 >> B4: Explain your heuristic for deciding whether a page fault for an
 >> invalid virtual address should cause the stack to be extended into
 >> the page that faulted.
+
+First, on page faults we can look at the stack pointer by looking at
+either the intr_frame or the stored stack pointer in the current thread
+struct depending on whether the exception occurred in user mode or not. We
+then check if the fault address is less than (stack_pointer - 32), if it is
+then the access is invalid and the process is released. Otherwise if the
+fault address is also less than the PHYS_BASE then it is a valid virtual
+address and a new page entry is created.
 
 ---- SYNCHRONIZATION ----
 
@@ -140,6 +146,23 @@ page_table_entry is added and a new frame is created).
 >> particular, explain how it prevents deadlock.  (Refer to the
 >> textbook for an explanation of the necessary conditions for
 >> deadlock.)
+
+There are two types of locks, the single global frame lock and the per
+process supplementary page table locks. The global frame_lock controls
+creation and eviction of frames in addition to any operations on the
+global frames_allocated list which is a list of all frames which currently
+are currently loaded into physical memory. The per process supplementary
+page table locks are used to ensure any changes to the local page table
+attributes are safe and cause minimal waiting since other threads should
+not have to wait for updating attributes on an unrelated thread's page
+table.
+
+There are at most two locks acquired with one of them being the
+frame_lock and the other being a page table lock. The frame_lock is always 
+acquired first. With these two conditions we are ensured there are no
+orderings of lock acquires which create a circularity of
+requests/ownership. Without circularity of ownership deadlocks are
+avoided.
 
 >> B6: A page fault in process P can cause another process Q's frame
 >> to be evicted.  How do you ensure that Q cannot access or modify
@@ -157,6 +180,8 @@ page_table_entry is added and a new frame is created).
 >> into physical memory, or do you use some other design?  How do you
 >> gracefully handle attempted accesses to invalid virtual addresses?
 
+
+
 ---- RATIONALE ----
 
 >> B9: A single lock for the whole VM system would make
@@ -165,6 +190,18 @@ page_table_entry is added and a new frame is created).
 >> possibility for deadlock but allows for high parallelism.  Explain
 >> where your design falls along this continuum and why you chose to
 >> design it this way.
+
+For different parts of the VM system we use different numbers of
+locks. For controlling the creation, eviction, and loading of frames there
+is a single frame_lock due to the global nature of frames which can be
+accessed by multiple processes. We thought this seemed the safest approach
+for ensuring multiple processes would not run into race conditions from
+sharing the same global frame pool. For controlling the insertion and
+removal of elements in the supplementary page tables, we use per-process
+locks built into the page_table struct which is a part of every thread
+struct. We didn't think it was appropriate for updating any single
+process's page table to cause all other processes to wait, hence we split
+the lock up per process.
 
    	      MEMORY MAPPED FILES
               ===================
@@ -223,6 +260,20 @@ added to the current process during this time.
 >> that much of their implementation can be shared.  Explain why your
 >> implementation either does or does not share much of the code for
 >> the two situations.
+
+Our mmap and executable demand-paged data does share a lot of
+implementation, in fact our executable loading uses the mmap functionality
+but just a different way of allocating the pages used. Each page required
+by the executable is inserted into the page table as an mmap page with
+FRAME_READONLY and FRAME_CODE flags set. Since each frame independently knows the
+mmapid, offset into the file, and amount of valid file they require, they can be lazily
+constructed and are incrementally added to the supplementary page table as
+the executable is scanned. This is a little different than the
+construction of an mmaped file made from a system call- which creates all
+the required pages at once in sequential order. However, once the
+executable is loaded or the system call mmap completes then 
+the two types types of mapped memory are not treated differently.
+
 
        	      SURVEY QUESTIONS
               ================
