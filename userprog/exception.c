@@ -156,8 +156,7 @@ page_fault (struct intr_frame *f)
   user = (f->error_code & PF_U) != 0;
 
   struct page_table *pt = thread_current ()->page_table;
-  struct page_table_entry *entry =
-    page_table_lookup (pt, fault_addr);
+  struct page_table_entry *entry = page_table_lookup (pt, fault_addr);
 
   if (entry == NULL)
     {
@@ -168,19 +167,20 @@ page_fault (struct intr_frame *f)
           struct frame *frame = frame_alloc ();
           frame_set_zero (frame);
           struct page_table_entry *pte =
-            page_table_add_entry (pt,
-                                  pg_round_down (fault_addr),
-                                  frame);
+            page_table_add_entry (pt, pg_round_down (fault_addr), frame);
           page_table_entry_load (pte);
         }
-      else
+      else {
+        //printf ("Killing because I have no entry at %p.\n", pg_round_down (fault_addr)); debug_backtrace ();
         goto kill_silent;
+      }
     }
   else
     {
+      //printf ("(%d) Faulting in %p. eip is %p\n", (int)page_fault_cnt, fault_addr, f->eip);
       if ((entry->frame->status & FRAME_READONLY) && write)
         goto kill_silent;
-
+      
       frame_page_in (entry->frame);
       ASSERT (entry->frame->paddr != NULL);
       page_table_entry_activate (entry);

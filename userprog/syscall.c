@@ -110,7 +110,6 @@ syscall_init (void)
              filesys_fileref_func,
              filesys_fileref_less, NULL);
   process_init ();
-  swap_init ();
   frame_init ();
 }
 

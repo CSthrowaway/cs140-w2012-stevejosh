@@ -11,7 +11,6 @@ static struct bitmap *free_blocks;    /* true == free, false == allocated. */
 static struct lock swap_alloc_lock;   /* For allocating or freeing slots.*/
 static struct lock swap_io_lock;      /* For reading or writing slots. */
 
-/* NOTE : Gets called by syscall_init in syscall.c. */
 void
 swap_init (void)
 {
