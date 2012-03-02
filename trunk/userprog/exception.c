@@ -179,10 +179,10 @@ page_fault (struct intr_frame *f)
   else
     {
       //printf ("(%d) Faulting in %p. eip is %p\n", (int)page_fault_cnt, pg_round_down (fault_addr), f->eip);
-      ASSERT (entry->frame->paddr == NULL);
       if ((entry->frame->status & FRAME_READONLY) && write)
         goto kill_silent;
 
+      ASSERT (entry->frame->paddr == NULL);
       page_table_entry_load (entry);
     }
 
