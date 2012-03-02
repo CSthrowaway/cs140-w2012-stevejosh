@@ -342,18 +342,21 @@ validate_str (const char *vstr, int max_length)
 
 /* Checks that the given buffer is entirely valid virtual memory. If the
    buffer is valid, returns the physical address of the buffer. Otherwise,
-   returns NULL. */
+   returns NULL. Additionally, will return NULL if writable is true and any
+   part of the buffer is marked as read-only in virtual memory. */
 static const void*
 validate_buffer (const char *buffer, unsigned size)
 {
   if (size == 0) return buffer;
 
   struct page_table *pt = thread_current ()->page_table;
+  struct page_table_entry *pte;
 
   /* Try to translate the first address of the buffer. If this fails, we
      know it's a bad buffer. */
-  void *translated = page_table_translate (pt, (const void *)buffer);
-  if (translated == NULL) return NULL;
+  pte = page_table_lookup (pt, (const void *)buffer);
+  if (pte == NULL)
+    return NULL;
 
   const char *next = buffer;
 
@@ -367,8 +370,8 @@ validate_buffer (const char *buffer, unsigned size)
     {
       unsigned offset = (size - i - 1);
       next += (offset < PGSIZE) ? offset : PGSIZE;
-      void *test = page_table_translate (pt, (const void* )next);
-      if (test == NULL) return NULL;
+      pte = page_table_lookup (pt, (const void *)next);
+      if (pte == NULL)
       page_table_entry_load (page_table_lookup (pt, (const void *)next));
     }
 
@@ -377,7 +380,45 @@ validate_buffer (const char *buffer, unsigned size)
   /* Looks like the whole buffer exists, so we can return the trnaslated
      beginning pointer. */
   page_table_entry_load (page_table_lookup (pt, (const void *)buffer));
-  return translated;
+  return buffer;
+}
+
+static bool
+begin_page_operation (const char *buffer, bool writable)
+{
+  if (buffer >= PHYS_BASE) return false;
+  struct page_table *pt = thread_current ()->page_table;
+  struct page_table_entry *pte = page_table_lookup (pt, buffer);
+  if (pte == NULL)
+    {
+      /* If this is meant to be a writable page, then perhaps we could extend
+         the stack to bring it into existence. If that's the case, we'll
+         succeed below, and the page will exist. Otherwise, we'll get killed
+         by the fault-handler, which is what we want anyway (because the access
+         is invalid in that case). */
+      if (writable)
+        {
+          *(char *)buffer = 0x8D;
+          pte = page_table_lookup (pt, buffer);
+          ASSERT (pte != NULL);
+        }
+      else
+        return false;
+    }
+  if (writable && (pte->frame->status & FRAME_READONLY)) return false;
+
+  pte->frame->status |= FRAME_PINNED;
+  page_table_entry_load (pte);
+  ASSERT (pte->frame->paddr != NULL);
+  return true;
+}
+
+static void
+end_page_operation (const char *buffer)
+{
+  struct page_table *pt = thread_current ()->page_table;
+  struct page_table_entry *pte = page_table_lookup (pt, buffer);
+  pte->frame->status &= (~FRAME_PINNED);
 }
 
 /* -- System Call #0 --
@@ -482,7 +523,10 @@ syscall_remove (const char *file)
          currently opened by other processes, we must mark it for
          deletion. Otherwise, we can go ahead and delete it. */
       fileref = filesys_get_fileref_from_inode(inode);
-      if (fileref->count == 0)
+
+      if (fileref == NULL)
+        success = filesys_remove (file);
+      else if (fileref->count == 0)
         {
           hash_delete (&filesys_fileref, &fileref->h_elem);
           success = filesys_remove (file);
@@ -546,8 +590,18 @@ fd_open (const char *file)
       strlcpy (fileref->name, file, NAME_MAX + 1);
       hash_insert (&filesys_fileref, &fileref->h_elem);
     }
-  else
+  else {
+    /* If the file has already been marked for deletion, we shouldn't let
+       anyone else open it, even though it still exists. */
+    if (fileref->delete)
+      {
+        file_close (handle);
+        unlock_filesys ();
+        return -1;
+      }
+
     fileref->count++;
+  }
 
   /* Initialize and insert the fd only after we know that the fileref
      operations have succeeded. */
@@ -592,6 +646,8 @@ syscall_filesize (int fd)
   return fd_filesize (fd);
 }
 
+/* Given a file descriptor, read the given number of bytes from the file into
+   the given buffer. Note that this function does NOT perform buffer checks. */
 int
 fd_read (int fd, void *buffer, unsigned size)
 {
@@ -607,25 +663,43 @@ fd_read (int fd, void *buffer, unsigned size)
   return bytes_read;
 }
 
+static int
+console_read (char *buffer, unsigned size)
+{
+  unsigned i;
+  for (i = 0; i < size; ++i)
+    *(buffer++) = input_getc ();
+  return size;
+}
+
 /* -- System Call #8 -- */
 static int
-syscall_read (int fd, void *buffer, unsigned size)
+syscall_read (int fd, char *buffer, unsigned size)
 {
-  char *cbuffer = (char*)validate_buffer (buffer, size);
-  if (cbuffer == NULL)
-    syscall_exit (-1);
-
-  /* If fd is STDIN_FILENO, then we read from the console. Otherwise,
-     read from the file corresponding to the given fd. */
-  if (fd == STDIN_FILENO)
+  int total_bytes = 0;
+  while (size > 0)
     {
-      unsigned i;
-      for (i = 0; i < size; ++i)
-        *(cbuffer++) = input_getc ();
-      return size;
+      unsigned bytes_on_page = PGSIZE - pg_ofs (buffer);
+      unsigned bytes_to_read = (bytes_on_page) > size ? size : bytes_on_page;
+      int bytes_read;
+      
+      if (!begin_page_operation (buffer, true))
+        syscall_exit (-1);
+
+      if (fd == STDIN_FILENO)
+        bytes_read = console_read (buffer, size);
+      else
+        bytes_read = fd_read (fd, buffer, size);
+
+      end_page_operation (buffer);
+      total_bytes += bytes_read;
+      size -= bytes_read;
+      buffer += bytes_read;
+      
+      if (bytes_read != (int)bytes_to_read)
+        return total_bytes;
     }
-  else
-    return fd_read (fd, buffer, size);
+  return total_bytes;
 }
 
 int
@@ -643,6 +717,20 @@ fd_write (int fd, const void *buffer, unsigned size)
   return bytes_written;
 }
 
+static int
+console_write (const char *buffer, unsigned size)
+{
+  unsigned left_to_write = size;
+  while (left_to_write > PUTBUF_BLOCK_SIZE)
+    {
+      putbuf (buffer, PUTBUF_BLOCK_SIZE);
+      buffer = (const char*)buffer + PUTBUF_BLOCK_SIZE;
+      left_to_write -= PUTBUF_BLOCK_SIZE;
+    }
+  putbuf (buffer, left_to_write);
+  return size;
+}
+
 /* -- System Call #9 --
    Write size bytes from buffer to the given file file descriptor. Return
    the number of bytes written to the file. Note that fd == STDOUT_FILENO
@@ -650,26 +738,30 @@ fd_write (int fd, const void *buffer, unsigned size)
 static int
 syscall_write (int fd, const void *buffer, unsigned size)
 {
-  buffer = validate_buffer (buffer, size);
-  if (buffer == NULL)
-    syscall_exit (-1);
-
-  /* If fd is STDOUT_FILENO, then we write to the console in fixed-size
-     blocks. Otherwise, read from the file corresponding to the given fd. */
-  if (fd == STDOUT_FILENO)
+  int total_bytes = 0;
+  while (size > 0)
     {
-      unsigned left_to_write = size;
-      while (left_to_write > PUTBUF_BLOCK_SIZE)
-        {
-          putbuf (buffer, PUTBUF_BLOCK_SIZE);
-          buffer = (const char*)buffer + PUTBUF_BLOCK_SIZE;
-          left_to_write -= PUTBUF_BLOCK_SIZE;
-        }
-      putbuf (buffer, left_to_write);
-      return size;
+      unsigned bytes_on_page = PGSIZE - pg_ofs (buffer);
+      unsigned bytes_to_write = (bytes_on_page) > size ? size : bytes_on_page;
+      int bytes_written;
+      
+      if (!begin_page_operation (buffer, false))
+        syscall_exit (-1);
+
+      if (fd == STDOUT_FILENO)
+        bytes_written = console_write (buffer, size);
+      else
+        bytes_written = fd_write (fd, buffer, size);
+
+      end_page_operation (buffer);
+      total_bytes += bytes_written;
+      size -= bytes_written;
+      buffer += bytes_written;
+      
+      if (bytes_written != (int)bytes_to_write)
+        return total_bytes;
     }
-  else
-    return fd_write (fd, buffer, size);
+  return total_bytes;
 }
 
 void
@@ -721,7 +813,8 @@ syscall_close (int fd)
 static mapid_t
 syscall_mmap (int fd, void *vaddr)
 {
-  if (vaddr >= PHYS_BASE || fd < 2 || (pg_round_down (vaddr) != vaddr)) return -1;
+  if (vaddr == 0 || vaddr >= PHYS_BASE || fd < 2 ||
+      (pg_round_down (vaddr) != vaddr)) return -1;
 
   int id = process_add_mmap_from_fd (fd);
   if (id < 0) return -1;
@@ -746,6 +839,7 @@ syscall_munmap (mapid_t mapid)
 static void
 syscall_handler (struct intr_frame *f)
 {
+  thread_current ()->esp = f->esp;
   /* Attempt to translate the stack pointer to a physical address. */
   const void* esp = translate_vaddr(f->esp);
   if (esp == NULL)  goto abort;
