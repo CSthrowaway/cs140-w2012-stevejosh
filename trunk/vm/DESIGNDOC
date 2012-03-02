@@ -34,64 +34,63 @@ Steve Lesser <sklesser@stanford.edu>
 >> A2: In a few paragraphs, describe your code for locating the frame,
 >> if any, that contains the data of a given page.
 
-Each entry in our supplementary page table (page_table_entry) contains a
-pointer corresponding to the frame containing it's data information
-(frame). This frame stays valid throughout the lifespan of the page table
-entry even when the frame is not loaded into memory. When the frame is not
-loaded into memory it's physical address field is NULL and it is not in the
-frames_allocated list of frame. Hence to find the frame for a given page
-we need to only look at the supplementary page table entry for the given
-page and get the frame field. We can then examine the frame struct to
-determine if the frame is loaded in memory or not and attributes such as
-whether it is mmapped or zeroed.
+We maintain a supplemental page table of entries that each contain a
+pointer corresponding to the frame containing the page's data. Note that
+the frame needn't be in physical memory for the pointer to be valid. We
+maintain this supplemental page table as a hash table. To find the frame
+that contains the data of a given virtual address, we perform a hash table
+lookup to find the supplemental page table entry corresponding to the given
+virtual address, then examine the frame pointer within this entry.
+
+If the data exists in physical memory, then frame->paddr will be non-null.
+Otherwise, frame->paddr is NULL, but frame still contains all of the
+necessary information to load the data back into memory upon requestion.
+That is to say that the frame structure holds information about whether a
+page is zeroed, swapped, or mmapped, as well as additional details specific
+to the current mode of storage.
 
 >> A3: How does your code coordinate accessed and dirty bits between
 >> kernel and user virtual addresses that alias a single frame, or
 >> alternatively how do you avoid the issue?
 
-(TODO: I'm not sure about the kernel vs user aliasing and how that's
-different from other types of aliasing)
-
-Each frame struct contains a list of all the page_table_entry values which
-point to that particular frame. Hence to determine if a frame has been
-accessed or is dirty we iterate through each of the page_table_entry
-structs referencing the current frame and call the pagedir_is_[dirty, accessed] on
-the page_table_entry and combine the results to see if any of them were true.
+We avoid this issue altogether by operating in the user virtual address
+space at all times. Our system call infrastructure makes exclusive use of
+user-space virtual addresses, such that we do not have to deal with kernel
+aliasing.
 
 ---- SYNCHRONIZATION ----
 
 >> A4: When two user processes both need a new frame at the same time,
 >> how are races avoided?
 
-If the virtual address has not been seen yet (hence no page_table_entry)
-then each frame is created with frame_alloc which is locked by a global
-frame_lock (TODO).
-
-Once a page has a page_table_entry it is ensured to have an associated
-frame. The frame structure is valid throughout the lifespan of the
-page_table_entry, it may not always be in memory but it can be brought in
-to memory with frame_page_in. frame_page_in uses a global lock while it
-selects and evicts a frame and then allocates a new page. The page is then
-inserted into the back of the frames_allocated list (TODO, be behind the
-current cursor in the clock algorithm?). 
-
+frame_page_in, which handles our demands for frames, requires that processes
+acquire the frame_lock before touching the main list of frames or the clock
+hand variable. Races are avoided by protected access to these shared
+structures with a lock. Note that we also force a process to release the lock
+while it writes a dirty page back to disk (so that other processes can proceed
+if they do not require I/O).
 
 ---- RATIONALE ----
 
 >> A5: Why did you choose the data structure(s) that you did for
 >> representing virtual-to-physical mappings?
 
-We chose the per-process supplementary page table (struct page_table) to
-have a pointer to a global frame (struct frame). The frame contains the
-physical address of the frame if it is loaded, or a NULL pointer if it is
-not loaded. The frame also includes three auxilary data fields which are
-used depending on the type of frame (mmap frame contains the mmapid, the
-offset into the file, and the valid bytes to read). This scheme allows
-a frame to be used by multiple pages and to easily keep track of that
-mapping for purposes such as determining if a frame is
-dirty/accessed. This also makes it easier for paging a frame in and out of
-memory since only the frame needs to be updated even if the frame is
-referenced by several page tables.
+Our choice of supplemental page entry structure is simple and clean.
+It simply maps a virtual page address to a frame. This allows the page
+entries to remain relatively lightweight and easy to manage due to their
+simplicity.
+
+On the other hand, we perform much of the heavy-lifting of this assignment
+with our frame structure, which encapsulates far more than just a slot in
+physical memory. Frames contain information about whether their data is
+zero-filled, swapped, or mmapped, and also hold information about swap slot,
+mmap ids, etc. Essentially, we chose frame to mean "a page of data that is
+generated and stored in a certain way, and may or may not be mapped to
+physical memory at this time." The motivation for making the frame meatier
+than the supplemental page entries was primarily to more elegantly support
+frame sharing between processes, which, unfortunately, we did not get around
+to in the end. However, we still feel that our design decisions made
+management of pages and frames quite conceptually simple.
 
    		       PAGING TO AND FROM DISK
                        =======================

@@ -589,8 +589,8 @@ process_remove_mmap (mmapid_t mapid)
      we have finished iterating through the has table. */
   struct list freed_entries;
   list_init (&freed_entries);
-
   hash_first (&i, &pt->table);
+
   while (hash_next (&i))
     {
       struct page_table_entry *pte =
@@ -604,7 +604,7 @@ process_remove_mmap (mmapid_t mapid)
           list_push_back (&freed_entries, &pte->l_elem);
         }
     }
-  
+
   /* Do the actual freeing of the supplemental page table entries. */
   struct list_elem *e;
   for (e = list_begin (&freed_entries); e != list_end (&freed_entries);)
@@ -615,7 +615,7 @@ process_remove_mmap (mmapid_t mapid)
       page_table_entry_remove (pte);
       e = next;
     }
-    
+
   /* Finally, clean up the mmap table entry. */
   list_remove (&mte->elem);
   free (mte);
@@ -671,7 +671,7 @@ process_create_mmap_pages (mmapid_t mapid, void *vaddr)
          so compute the correct number of bytes to read (so that the rest
          will be zeroed by the page-fault handler). */
       bytes_to_read = (final - cur >= PGSIZE) ? PGSIZE : final - cur;
-
+      
       /* Wire this frame into the supplemental page table. */
       frame_set_mmap (frame, mapid, offset, bytes_to_read);
       page_table_add_entry (pt, (void*)cur, frame);
