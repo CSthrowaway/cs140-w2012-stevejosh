@@ -17,7 +17,9 @@
 #define FRAME_READONLY  0x10       /* Set when the frame is not writeable. */
 #define FRAME_CODE      0x20       /* Set when the frame came from a code
                                       segment (hence cannot be written back). */
-
+#define FRAME_LOCKED    0x40       /* Set when the frame is not to be touched
+                                      by anyone other than the locker. */
+                                      
 typedef uint32_t frame_status;
 typedef int mmapid_t;
 
@@ -40,7 +42,7 @@ void frame_init (void);
 struct frame *frame_alloc (void);
 void frame_free (struct frame *frame);
 void frame_page_in (struct frame *frame);
-void frame_page_out (struct frame *frame);
+void frame_page_out (struct frame *frame, bool dying);
 
 bool frame_get_attribute (struct frame *frame, uint32_t attribute);
 void frame_set_attribute (struct frame *frame, uint32_t attribute, bool on);

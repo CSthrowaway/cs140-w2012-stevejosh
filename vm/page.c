@@ -65,7 +65,6 @@ page_table_lookup (struct page_table *ptable, const void* vaddr)
 
   if (found == NULL)
     return NULL;
-
   return hash_entry (found, struct page_table_entry, h_elem);
 }
 
@@ -75,10 +74,22 @@ page_table_lookup (struct page_table *ptable, const void* vaddr)
    is not contained in any virtual page in the page table. */   
 void*
 page_table_translate (struct page_table *ptable, const void* vaddr)
-  {
-    struct page_table_entry *pte = page_table_lookup (ptable, vaddr);
-    return (pte == NULL ) ? NULL : vaddr;
-  }
+{
+  struct page_table_entry *pte = page_table_lookup (ptable, vaddr);
+  return (pte == NULL ) ? NULL : vaddr;
+}
+
+/* Page table entry comparator for lists. */
+static bool page_table_entry_lless (const struct list_elem *a,
+                                    const struct list_elem *b,
+                                    void *aux UNUSED)
+{
+  struct page_table_entry *pte1 =
+    list_entry (a, struct page_table_entry, l_elem);
+  struct page_table_entry *pte2 =
+    list_entry (b, struct page_table_entry, l_elem);
+  return pte1->vaddr < pte2->vaddr;
+}
 
 /* NOTE : Assumes that synchronization has already been taken care of (e.g.,
           the caller has already acquired this page table's lock. */
@@ -96,7 +107,8 @@ page_table_add_entry (struct page_table *ptable, const void* vaddr,
   entry->frame = frame;
   entry->thread = thread_current ();
   hash_insert (&ptable->table, &entry->h_elem);
-  list_push_back (&frame->users, &entry->l_elem);
+  list_insert_ordered (&frame->users, &entry->l_elem,
+                       page_table_entry_lless, NULL);
   return entry;
 }
 
@@ -149,6 +161,5 @@ page_table_entry_remove (struct page_table_entry *pte)
 {
   struct page_table* pt = pte->thread->page_table;
   hash_delete (&pt->table, &pte->h_elem);
-  printf ("Freeing %p\n", pte);
   free (pte);
 }
