@@ -155,8 +155,13 @@ frame_page_out (struct frame *frame)
       page_table_entry_deactivate (p);
     }
 
+  /* Release the lock while we're saving the frame data, as we'd like to let
+     other processes proceed if they don't need to perform I/O. */
+  lock_release (&frame_lock);
+  // TODO set the "do not touch me" flag
   if (is_dirty || frame_get_attribute (frame, FRAME_SWAP))
     frame_save_data (frame);
+  lock_acquire (&frame_lock);
 
   /* Remove the frame from the allocated frames list. */
   if (clock_hand == &frame->elem)

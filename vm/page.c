@@ -1,3 +1,4 @@
+#include "lib/string.h"
 #include "userprog/pagedir.h"
 #include "threads/malloc.h"
 #include "threads/synch.h"
@@ -138,8 +139,6 @@ page_table_entry_clear (struct page_table_entry *pte)
 {
   if (list_size (&pte->frame->users) == 1)
     frame_free (pte->frame);
-  pagedir_clear_page (pte->thread->pagedir, pte->vaddr);
-    
   pte->frame = NULL;
   pte->vaddr = NULL;
 }
@@ -150,5 +149,6 @@ page_table_entry_remove (struct page_table_entry *pte)
 {
   struct page_table* pt = pte->thread->page_table;
   hash_delete (&pt->table, &pte->h_elem);
+  printf ("Freeing %p\n", pte);
   free (pte);
 }
