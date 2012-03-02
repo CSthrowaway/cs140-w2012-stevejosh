@@ -214,7 +214,7 @@ frame_page_in (struct frame *frame)
       struct frame* frame_to_evict = frame_choose_eviction ();
       frame_page_out (frame_to_evict);
       lock_release (&frame_lock);
-	    page = palloc_get_page (PAL_USER);
+      page = palloc_get_page (PAL_USER);
     }
   
   frame->paddr = page;

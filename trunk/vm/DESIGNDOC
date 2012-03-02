@@ -1,0 +1,250 @@
+                        +---------------------------+
+                        |          CS 140           |
+                        | PROJECT 3: VIRTUAL MEMORY |
+                        |      DESIGN DOCUMENT      |
+                        +---------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Josh Parnell <parnell@stanford.edu>
+Steve Lesser <sklesser@stanford.edu>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+   	 	 PAGE TABLE MANAGEMENT
+                 =====================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+---- ALGORITHMS ----
+
+>> A2: In a few paragraphs, describe your code for locating the frame,
+>> if any, that contains the data of a given page.
+
+Each entry in our supplementary page table (page_table_entry) contains a
+pointer corresponding to the frame containing it's data information
+(frame). This frame stays valid throughout the lifespan of the page table
+entry even when the frame is not loaded into memory. When the frame is not
+loaded into memory it's physical address field is NULL and it is not in the
+frames_allocated list of frame. Hence to find the frame for a given page
+we need to only look at the supplementary page table entry for the given
+page and get the frame field. We can then examine the frame struct to
+determine if the frame is loaded in memory or not and attributes such as
+whether it is mmapped or zeroed.
+
+>> A3: How does your code coordinate accessed and dirty bits between
+>> kernel and user virtual addresses that alias a single frame, or
+>> alternatively how do you avoid the issue?
+
+(TODO: I'm not sure about the kernel vs user aliasing and how that's
+different from other types of aliasing)
+
+Each frame struct contains a list of all the page_table_entry values which
+point to that particular frame. Hence to determine if a frame has been
+accessed or is dirty we iterate through each of the page_table_entry
+structs referencing the current frame and call the pagedir_is_[dirty, accessed] on
+the page_table_entry and combine the results to see if any of them were true.
+
+---- SYNCHRONIZATION ----
+
+>> A4: When two user processes both need a new frame at the same time,
+>> how are races avoided?
+
+If the virtual address has not been seen yet (hence no page_table_entry)
+then each frame is created with frame_alloc which is locked by a global
+frame_lock (TODO).
+
+Once a page has a page_table_entry it is ensured to have an associated
+frame. The frame structure is valid throughout the lifespan of the
+page_table_entry, it may not always be in memory but it can be brought in
+to memory with frame_page_in. frame_page_in uses a global lock while it
+selects and evicts a frame and then allocates a new page. The page is then
+inserted into the back of the frames_allocated list (TODO, be behind the
+current cursor in the clock algorithm?). 
+
+
+---- RATIONALE ----
+
+>> A5: Why did you choose the data structure(s) that you did for
+>> representing virtual-to-physical mappings?
+
+We chose the per-process supplementary page table (struct page_table) to
+have a pointer to a global frame (struct frame). The frame contains the
+physical address of the frame if it is loaded, or a NULL pointer if it is
+not loaded. The frame also includes three auxilary data fields which are
+used depending on the type of frame (mmap frame contains the mmapid, the
+offset into the file, and the valid bytes to read). This scheme allows
+a frame to be used by multiple pages and to easily keep track of that
+mapping for purposes such as determining if a frame is
+dirty/accessed. This also makes it easier for paging a frame in and out of
+memory since only the frame needs to be updated even if the frame is
+referenced by several page tables.
+
+   		       PAGING TO AND FROM DISK
+                       =======================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+---- ALGORITHMS ----
+
+>> B2: When a frame is required but none is free, some frame must be
+>> evicted.  Describe your code for choosing a frame to evict.
+
+When we want to evict a frame (frame_choose_eviction) we iterate through
+the frames_allocated list starting from our globally stored cursor (TODO
+cursor) and wrapping around the end into the front. We evict the first
+frame which was not accessed by any pages pointing at it and is not
+pinned. If we do a complete loop around the list and do not find any non
+accessed frame we evict the first frame which is not pinned (TODO make
+sure frame is not pinned). As we check each frame's page for whether it
+has been accessed we reset the accessed bit to be not accessed. This
+algorithm is equivalent to the clock algorithm.
+
+>> B3: When a process P obtains a frame that was previously used by a
+>> process Q, how do you adjust the page table (and any other data
+>> structures) to reflect the frame Q no longer has?
+
+When the frame that was previously used by process Q is evicted the frame
+stays connected to the page table but it's physical address becomes NULL
+and it is removed from the frames_allocated list and the entry in the
+process's page table is also removed. Then when a page in process P uses
+the physical memory that Q was previously using it updates it's frame
+structure to point to that physical memory. and adds itself to the
+frames_allocated list. The supplementary page table does not need to be
+updated (unless the page is has not been accessed before in which case the
+page_table_entry is added and a new frame is created).
+
+>> B4: Explain your heuristic for deciding whether a page fault for an
+>> invalid virtual address should cause the stack to be extended into
+>> the page that faulted.
+
+---- SYNCHRONIZATION ----
+
+>> B5: Explain the basics of your VM synchronization design.  In
+>> particular, explain how it prevents deadlock.  (Refer to the
+>> textbook for an explanation of the necessary conditions for
+>> deadlock.)
+
+>> B6: A page fault in process P can cause another process Q's frame
+>> to be evicted.  How do you ensure that Q cannot access or modify
+>> the page during the eviction process?  How do you avoid a race
+>> between P evicting Q's frame and Q faulting the page back in?
+
+>> B7: Suppose a page fault in process P causes a page to be read from
+>> the file system or swap.  How do you ensure that a second process Q
+>> cannot interfere by e.g. attempting to evict the frame while it is
+>> still being read in?
+
+>> B8: Explain how you handle access to paged-out pages that occur
+>> during system calls.  Do you use page faults to bring in pages (as
+>> in user programs), or do you have a mechanism for "locking" frames
+>> into physical memory, or do you use some other design?  How do you
+>> gracefully handle attempted accesses to invalid virtual addresses?
+
+---- RATIONALE ----
+
+>> B9: A single lock for the whole VM system would make
+>> synchronization easy, but limit parallelism.  On the other hand,
+>> using many locks complicates synchronization and raises the
+>> possibility for deadlock but allows for high parallelism.  Explain
+>> where your design falls along this continuum and why you chose to
+>> design it this way.
+
+   	      MEMORY MAPPED FILES
+              ===================
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+---- ALGORITHMS ----
+
+>> C2: Describe how memory mapped files integrate into your virtual
+>> memory subsystem.  Explain how the page fault and eviction
+>> processes differ between swap pages and other pages.
+
+Memory mapped pages are marked by the frame associated with the page
+having an mmap flag set in addition to three auxilary pieces of
+information: the mmapid, the offset into the file of the start of the
+frame, and the amount of the page which is still part of the file (PGSIZE
+except for the last page).
+
+On a page fault of a mmapped page a valid physical address is obtained
+and then the file information found in the frame struct is used to read
+the relevant part of the file into the physical address. If the remaining
+part of the file to be read in is less than a page in size then the rest
+of the page after the valid file parts is set to be 0. This is similar to
+reading in swap pages but the source is the file system instead
+of swap space. Additionally the relevant amount of the file has to be
+considered to potentially pad the end of a frame with 0's.
+
+When a mmapped page is evicted the pages referencing the relevant frame
+are checked if any of them are dirty. If any of them are dirty, then the the frame is
+written out to the original file using the auxilary data found in the
+frame struct to know which file and how much of the file to write
+out. This differs from the swap pages only in the destination of the
+writing and in accounting for the final page in a file which may write out
+less than a full page of data.
+
+>> C3: Explain how you determine whether a new file mapping overlaps
+>> any existing segment.
+
+Before creating the supplementary page table entries required for the
+mmap, all the necessary pages are walked through and made sure there is
+not an already existing entry in the current page table. Only once all the
+pages are ensured to be uninitialized then all the supplementary page
+table entries are created. This whole process is done while locked under
+the per-process supplementary page table lock to ensure no new pages are
+added to the current process during this time.
+
+---- RATIONALE ----
+
+>> C4: Mappings created with "mmap" have similar semantics to those of
+>> data demand-paged from executables, except that "mmap" mappings are
+>> written back to their original files, not to swap.  This implies
+>> that much of their implementation can be shared.  Explain why your
+>> implementation either does or does not share much of the code for
+>> the two situations.
+
+       	      SURVEY QUESTIONS
+              ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
