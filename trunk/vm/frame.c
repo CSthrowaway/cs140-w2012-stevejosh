@@ -39,8 +39,10 @@ frame_free (struct frame *frame)
   frame_page_out (frame);
   if (frame->paddr != NULL)
     {
+      lock_acquire (&frame_lock);
       palloc_free_page (frame->paddr);
       list_remove (&frame->elem);
+      lock_release (&frame_lock);
     }
   free (frame);
 }
@@ -104,6 +106,15 @@ frame_save_data (struct frame *frame)
       frame_set_attribute (frame, FRAME_SWAP, true);
     }
 
+  /* If the frame contains part of the code segment but was dirtied, we
+     need to convert it to a swap page, because it can't be written back
+     to the executable. */
+  if (frame_get_attribute (frame, FRAME_CODE))
+    {
+      frame_set_attribute (frame, FRAME_MMAP, false);
+      frame_set_attribute (frame, FRAME_SWAP, true);
+    }
+
   if (frame_get_attribute (frame, FRAME_SWAP))
   	{
       swapid_t id = swap_alloc ();
@@ -144,7 +155,7 @@ frame_page_out (struct frame *frame)
       page_table_entry_deactivate (p);
     }
 
-  if (is_dirty)
+  if (is_dirty || frame_get_attribute (frame, FRAME_SWAP))
     frame_save_data (frame);
 
   /* Remove the frame from the allocated frames list. */

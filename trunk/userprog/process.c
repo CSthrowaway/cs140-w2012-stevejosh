@@ -950,9 +950,10 @@ load_segment (mmapid_t mmapid, off_t ofs, uint8_t *upage,
                                                           read_bytes - i;
       frame_set_mmap (frame, mmapid, ofs + i, bytes_to_read);
       frame_set_attribute (frame, FRAME_READONLY, !writable);
+      frame_set_attribute (frame, FRAME_CODE, true);
       page_table_add_entry (thread_current ()->page_table,
                             (void *)(upage + i), frame);
-      //printf ("[%p] : %d read bytes.\n", upage + i, PGSIZE);
+      //printf ("[%p-%p] : %d read bytes.\n", upage + i, upage + i + PGSIZE -1, read_bytes);
       //frame_page_in (frame);
       //pagedir_set_page (thread_current ()->pagedir,
       //            upage + i,
