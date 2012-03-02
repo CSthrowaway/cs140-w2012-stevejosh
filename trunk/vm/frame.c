@@ -36,14 +36,14 @@ frame_alloc (void)
 void
 frame_free (struct frame *frame)
 {
-  frame_page_out (frame);
+  lock_acquire (&frame_lock);
+  frame_page_out (frame, true);
   if (frame->paddr != NULL)
     {
-      lock_acquire (&frame_lock);
       palloc_free_page (frame->paddr);
       list_remove (&frame->elem);
-      lock_release (&frame_lock);
     }
+  lock_release (&frame_lock);
   free (frame);
 }
 
@@ -133,10 +133,15 @@ frame_save_data (struct frame *frame)
    file if necessary. The frame's physical memory gets freed via
    palloc_free_page, and goes back into the user page pool. */
 void
-frame_page_out (struct frame *frame)
+frame_page_out (struct frame *frame, bool dying)
 {
   if (frame->paddr == NULL) return;
   ASSERT (!(frame->status & FRAME_PINNED));
+  
+  /* We lock the frame so that nobody can see the intermediate results of
+     this function. If another process faults on this frame, they are required
+     to continually fault until the frame becomes unlocked. */
+  frame_set_attribute (frame, FRAME_LOCKED, true);
   
   bool is_dirty = false;
 
@@ -150,6 +155,7 @@ frame_page_out (struct frame *frame)
     {
       struct page_table_entry *p = list_entry (e, struct page_table_entry,
                                                l_elem);
+      //printf ("(%d) pageout touching %p\n", thread_current ()->tid, p->thread->page_table->table);
       if (pagedir_is_dirty (p->thread->pagedir, p->vaddr))
         is_dirty = true;
       page_table_entry_deactivate (p);
@@ -157,11 +163,14 @@ frame_page_out (struct frame *frame)
 
   /* Release the lock while we're saving the frame data, as we'd like to let
      other processes proceed if they don't need to perform I/O. */
-  lock_release (&frame_lock);
-  // TODO set the "do not touch me" flag
-  if (is_dirty || frame_get_attribute (frame, FRAME_SWAP))
-    frame_save_data (frame);
-  lock_acquire (&frame_lock);
+  if ((is_dirty && frame_get_attribute (frame, FRAME_MMAP)) ||
+      (is_dirty && !dying && frame_get_attribute (frame, FRAME_ZERO)) ||
+      (!dying && frame_get_attribute (frame, FRAME_SWAP)))
+    {
+      lock_release (&frame_lock);
+      frame_save_data (frame);
+      lock_acquire (&frame_lock);
+    }
 
   /* Remove the frame from the allocated frames list. */
   if (clock_hand == &frame->elem)
@@ -170,6 +179,9 @@ frame_page_out (struct frame *frame)
   clock_advance_hand ();
   palloc_free_page (frame->paddr);
   frame->paddr = NULL;
+
+  /* Finally, we can unlock the frame. */
+  frame_set_attribute (frame, FRAME_LOCKED, false);
 }
 
 /* Checks all virtual pages that are using this virtual frame to see if they
@@ -186,6 +198,7 @@ frame_was_accessed (struct frame *frame)
     {
       struct page_table_entry *pte = list_entry (p, struct page_table_entry,
                                                  l_elem);
+      //printf ("thread: %p (%d), pagedir: %p, vaddr: %p\n", pte->thread, pte->thread->tid, pte->thread->pagedir, pte->vaddr);
       if (pagedir_is_accessed (pte->thread->pagedir, pte->vaddr))
         {
           accessed = true;
@@ -206,8 +219,9 @@ frame_choose_eviction (void)
       if (candidate == NULL) return NULL;
 
       struct frame *frame = list_entry (candidate, struct frame, elem);
-      if (!frame_was_accessed (frame) &&
-          !frame_get_attribute (frame, FRAME_PINNED))
+      if (!frame_get_attribute (frame, FRAME_PINNED) &&
+          !frame_get_attribute (frame, FRAME_LOCKED) &&
+          !frame_was_accessed (frame))
         return frame;
     }
 }
@@ -228,20 +242,22 @@ frame_page_in (struct frame *frame)
       // TODO : Fix synchro.
       lock_acquire (&frame_lock);
       struct frame* frame_to_evict = frame_choose_eviction ();
-      frame_page_out (frame_to_evict);
+      ASSERT (!frame_get_attribute (frame_to_evict, FRAME_PINNED));
+      ASSERT (!frame_get_attribute (frame_to_evict, FRAME_LOCKED));
+      frame_page_out (frame_to_evict, false);
       lock_release (&frame_lock);
       page = palloc_get_page (PAL_USER);
     }
   
   frame->paddr = page;
-  
+  frame_load_data (frame);
+  ASSERT (frame->paddr);
+
   lock_acquire (&frame_lock);
   list_push_back (&frames_allocated, &frame->elem);
   if (clock_hand == NULL)
     clock_hand = &frame->elem;
   lock_release (&frame_lock);
-
-  frame_load_data (frame);
 }
 
 void

@@ -567,15 +567,18 @@ thread_donate_priority (struct thread *t)
          to remove and re-insert that donation to preserve ordering. */
       if (running_thread() != t)
         thread_recall_donation (t);
-  
-      /* Make the donation. */
-      list_insert_ordered (&waiter->priority_donations, &t->donation_elem,
-                           thread_donation_cmp, NULL);
-  
-      /* Recursively call this function on the thread we're waiting on
-         so that it updates its own effective priority and updates its
-         own donations appropriately. */
-      thread_donate_priority (waiter);
+    
+      if (waiter != NULL)
+        {
+          /* Make the donation. */
+          list_insert_ordered (&waiter->priority_donations, &t->donation_elem,
+                               thread_donation_cmp, NULL);
+      
+          /* Recursively call this function on the thread we're waiting on
+             so that it updates its own effective priority and updates its
+             own donations appropriately. */
+          thread_donate_priority (waiter);
+        }
     }
 }
 

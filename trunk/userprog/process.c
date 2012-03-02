@@ -423,6 +423,41 @@ process_exit (void)
     }
 }
 
+static void
+process_free_memory (void)
+{
+  struct list freed_entries;
+  list_init (&freed_entries);
+  lock_acquire (&thread_current ()->page_table->lock);
+  struct hash_iterator i;
+  hash_first (&i, &thread_current ()->page_table->table);
+
+  /* Since we don't want to modify the hash elements while iterating, we'll
+     just put them in a list and delete them later. */
+  while (hash_next (&i))
+    {
+      struct page_table_entry *pte =
+        hash_entry (hash_cur (&i), struct page_table_entry, h_elem);
+
+      /* Unpin the frame if it was pinned, then clear it from the the table. */
+      frame_set_attribute (pte->frame, FRAME_PINNED, false);
+      page_table_entry_clear (pte);
+      list_push_back (&freed_entries, &pte->l_elem);
+    }
+
+  struct list_elem *e;
+  for (e = list_begin (&freed_entries);
+       e != list_end (&freed_entries);)
+    {
+      struct page_table_entry *pte =
+        list_entry (e, struct page_table_entry, l_elem);
+      e = list_next(e);
+      free (pte);
+    }
+    
+  lock_release (&thread_current ()->page_table->lock);
+}
+
 /* Must be called before a running process gets killed.
    Unlike process_exit, this function has access to the
    exit code of the process, and will make preparations
@@ -430,13 +465,6 @@ process_exit (void)
 void
 process_release (int exit_code)
 {
-  /* TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
-     Clean up resources:
-        mmaps
-        page table
-        SHIT.
-  */
-   
   lock_acquire (&process_death_lock);
   printf("%s: exit(%d)\n", thread_current ()->name, exit_code); 
  
@@ -493,6 +521,8 @@ process_release (int exit_code)
   /* Close the executable file and allow writing to it. */
   file_allow_write (thread_current ()->executable);
   file_close (thread_current ()->executable);
+
+  process_free_memory ();
   
   lock_release (&process_death_lock);
 }
@@ -579,6 +609,7 @@ process_remove_mmap (mmapid_t mapid)
   ASSERT (mte != NULL);
   
   struct page_table *pt = thread_current ()->page_table;
+  lock_acquire (&pt->lock);
   struct hash_iterator i;
 
   /* We need to walk the supplemental page table to determine which pages
@@ -590,6 +621,7 @@ process_remove_mmap (mmapid_t mapid)
   struct list freed_entries;
   list_init (&freed_entries);
   hash_first (&i, &pt->table);
+  //printf ("(%d) MMAP Touching %p.\n", thread_current ()->tid, pt->table);
 
   while (hash_next (&i))
     {
@@ -598,7 +630,8 @@ process_remove_mmap (mmapid_t mapid)
 
       /* If the frame corresponding to this entry is MMAPd and has a matching
          mmapid (which would be stored in aux1), then mark it for removal. */
-      if ((pte->frame->status & FRAME_MMAP) && (int)pte->frame->aux1 == mapid)
+      if (frame_get_attribute (pte->frame, FRAME_MMAP) &&
+          (mmapid_t)pte->frame->aux1 == mapid)
         {
           page_table_entry_clear (pte);
           list_push_back (&freed_entries, &pte->l_elem);
@@ -616,6 +649,7 @@ process_remove_mmap (mmapid_t mapid)
       e = next;
     }
 
+  lock_release (&pt->lock);
   /* Finally, clean up the mmap table entry. */
   list_remove (&mte->elem);
   free (mte);
@@ -941,7 +975,6 @@ load_segment (mmapid_t mmapid, off_t ofs, uint8_t *upage,
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
 
-#if 1
   uint32_t i;
   for (i = 0; i < read_bytes; i += PGSIZE)
     {
@@ -954,11 +987,6 @@ load_segment (mmapid_t mmapid, off_t ofs, uint8_t *upage,
       page_table_add_entry (thread_current ()->page_table,
                             (void *)(upage + i), frame);
       //printf ("[%p-%p] : %d read bytes.\n", upage + i, upage + i + PGSIZE -1, read_bytes);
-      //frame_page_in (frame);
-      //pagedir_set_page (thread_current ()->pagedir,
-      //            upage + i,
-      //            frame->paddr,
-      //            !(frame->status & FRAME_READONLY));
     }
 
   zero_bytes -= (ROUND_UP (read_bytes, PGSIZE) - read_bytes);
@@ -972,52 +1000,7 @@ load_segment (mmapid_t mmapid, off_t ofs, uint8_t *upage,
       page_table_add_entry (thread_current ()->page_table,
                             (void *)(upage + read_bytes + i), frame);
       //printf ("[%p] : %d zero bytes.\n", upage + read_bytes + i, PGSIZE);
-      //frame_page_in (frame);
-      //pagedir_set_page (thread_current ()->pagedir,
-      //            upage + read_bytes + i,
-      //            frame->paddr,
-      //            !(frame->status & FRAME_READONLY));
     }
-
-#else
-
-  file_seek (file, ofs);
-  while (read_bytes > 0 || zero_bytes > 0) 
-    {
-      /* Calculate how to fill this page.
-         We will read PAGE_READ_BYTES bytes from FILE
-         and zero the final PAGE_ZERO_BYTES bytes. */
-      size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
-      size_t page_zero_bytes = PGSIZE - page_read_bytes;
-
-      /* Get a page of memory. */
-      uint8_t *kpage = palloc_get_page (PAL_USER);
-      if (kpage == NULL)
-        return false;
-
-      /* Load this page. */
-      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
-      memset (kpage + page_read_bytes, 0, page_zero_bytes);
-
-      printf ("[%p] : %d read bytes, %d zero bytes.\n", upage, page_read_bytes, page_zero_bytes);
-      /* Add the page to the process's address space. */
-      if (!install_page (upage, kpage, writable)) 
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
-
-      /* Advance. */
-      read_bytes -= page_read_bytes;
-      zero_bytes -= page_zero_bytes;
-      upage += PGSIZE;
-    }
-    
-#endif
   return true;
 }
 

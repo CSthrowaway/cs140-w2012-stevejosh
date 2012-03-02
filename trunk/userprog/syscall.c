@@ -768,6 +768,11 @@ fd_seek (int fd, unsigned position)
 {
   lock_filesys ();
   struct file *handle = filesys_get_file (fd);
+  if (handle == NULL)
+    {
+      unlock_filesys ();
+      return;
+    }
   file_seek (handle, position);
   unlock_filesys ();
 }
