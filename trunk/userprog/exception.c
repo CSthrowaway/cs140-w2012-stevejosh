@@ -155,39 +155,38 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  if (user)
-    {
-      struct page_table *pt = thread_current ()->page_table;
-      struct page_table_entry *entry =
-        page_table_lookup (pt, fault_addr);
+  struct page_table *pt = thread_current ()->page_table;
+  struct page_table_entry *entry =
+    page_table_lookup (pt, fault_addr);
 
-      if (entry == NULL)
+  if (entry == NULL)
+    {
+      void *esp = user ? f->esp : thread_current ()->esp;
+      if (fault_addr < PHYS_BASE &&
+          fault_addr >= (void*)((char *)esp - 32))
         {
-          if (fault_addr < PHYS_BASE &&
-              fault_addr >= (void*)((char *)f->esp - 32))
-            {
-              struct frame *frame = frame_alloc ();
-              frame_set_zero (frame);
-              struct page_table_entry *pte =
-                page_table_add_entry (pt,
-                                      pg_round_down (fault_addr),
-                                      frame);
-              page_table_entry_load (pte);
-            }
-          else
-            goto kill_silent;
+          struct frame *frame = frame_alloc ();
+          frame_set_zero (frame);
+          struct page_table_entry *pte =
+            page_table_add_entry (pt,
+                                  pg_round_down (fault_addr),
+                                  frame);
+          page_table_entry_load (pte);
         }
       else
-        {
-          if ((entry->frame->status & FRAME_READONLY) && write)
-            goto kill_silent;
-
-          frame_page_in (entry->frame);
-          ASSERT (entry->frame->paddr != NULL);
-          page_table_entry_activate (entry);
-        }
+        goto kill_silent;
     }
   else
+    {
+      if ((entry->frame->status & FRAME_READONLY) && write)
+        goto kill_silent;
+
+      frame_page_in (entry->frame);
+      ASSERT (entry->frame->paddr != NULL);
+      page_table_entry_activate (entry);
+    }
+
+/*  else
   {  
     printf ("Page fault at %p: %s error %s page in %s context.\n",
             fault_addr,
@@ -196,7 +195,7 @@ page_fault (struct intr_frame *f)
             user ? "user" : "kernel");
     kill (f);
   }
-  
+*/  
   return;
 
 kill_silent:

@@ -474,6 +474,19 @@ process_release (int exit_code)
         s->status = PROCESS_ORPHANED;
     }
 
+  /* Clean up all outstanding mmaps. */
+  for (e = list_begin (&thread_current ()->mmap_table);
+       e != list_end (&thread_current ()->mmap_table);)
+    {
+      struct mmap_table_entry *mte =
+        list_entry (e, struct mmap_table_entry, elem);
+
+      /* Note that process_remove_mmap is going to free mte, so we need to
+         store the next pointer first. */
+      e = list_next (e);
+      process_remove_mmap (mte->id);
+    }
+
   /* Free all of the open files that were associated with this process. */  
   filesys_free_open_files (thread_current ());
 
@@ -585,7 +598,7 @@ process_remove_mmap (mmapid_t mapid)
 
       /* If the frame corresponding to this entry is MMAPd and has a matching
          mmapid (which would be stored in aux1), then mark it for removal. */
-      if ((pte->frame->status & FRAME_MMAP) && pte->frame->aux1 == mapid)
+      if ((pte->frame->status & FRAME_MMAP) && (int)pte->frame->aux1 == mapid)
         {
           page_table_entry_clear (pte);
           list_push_back (&freed_entries, &pte->l_elem);
@@ -602,6 +615,10 @@ process_remove_mmap (mmapid_t mapid)
       page_table_entry_remove (pte);
       e = next;
     }
+    
+  /* Finally, clean up the mmap table entry. */
+  list_remove (&mte->elem);
+  free (mte);
 }
 
 /* Walks through the beginning of each page address between begin and
@@ -662,35 +679,6 @@ process_create_mmap_pages (mmapid_t mapid, void *vaddr)
 
   lock_release (&pt->lock);
   return true;
-}
-
-/* Writes out the memory mapped file to the file system. */
-void
-process_write_mmap_to_file(mapid_t mapping)
-{
-  int fd = process_get_mmap_fd (mapping);
-  if (fd <= 1) 
-    return;
-
-  struct page_table* pt = thread_current ()->page_table;
-  struct hash_iterator i;
-  hash_first(&i,& pt->table);
-  while (hash_next( &i))
-    {
-      struct page_table_entry* page = hash_entry (hash_cur (&i), struct
-					       page_table_entry, h_elem);
-      struct frame* f = page->frame;
-      if (IS_FRAME_MMAP(f->status))
-	{
-	  if (f->aux1 == (uint32_t)mapping)
-	    {
-	      uint32_t offset = f->aux2;
-	      uint32_t bytesToWrite = f->aux3;
-	      fd_seek (fd, offset);
-	      fd_write (fd, (void*) page->vaddr, bytesToWrite);
-	    }
-	}
-    }
 }
 
 /* We load ELF binaries.  The following definitions are taken

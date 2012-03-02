@@ -136,10 +136,9 @@ page_table_entry_load (struct page_table_entry *pte)
 void
 page_table_entry_clear (struct page_table_entry *pte)
 {
-  pagedir_clear_page (pte->thread->pagedir, pte->vaddr);
-  list_remove (&pte->l_elem);
-  if (list_empty (&pte->frame->users))
+  if (list_size (&pte->frame->users) == 1)
     frame_free (pte->frame);
+  pagedir_clear_page (pte->thread->pagedir, pte->vaddr);
     
   pte->frame = NULL;
   pte->vaddr = NULL;

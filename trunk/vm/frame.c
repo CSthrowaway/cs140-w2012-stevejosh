@@ -20,8 +20,6 @@ frame_init (void)
   lock_init (&frame_lock);
 }
 
-#include "lib/stdio.h"
-
 struct frame*
 frame_alloc (void)
 {
@@ -123,7 +121,8 @@ frame_page_out (struct frame *frame)
     {
       struct page_table_entry *p = list_entry (e, struct page_table_entry,
                                                l_elem);
-      is_dirty |= pagedir_is_dirty (p->thread->pagedir, p->vaddr);
+      if (pagedir_is_dirty (p->thread->pagedir, p->vaddr))
+        is_dirty = true;
       page_table_entry_deactivate (p);
     }
 

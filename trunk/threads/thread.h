@@ -161,9 +161,10 @@ struct thread
                                            thread's process. */
 #endif
 #ifdef VM
-    struct list mmap_table;             /* Mmap table of mmapids and file
-					   descriptors. */
+    struct list mmap_table;             /* List of all process mmap data. */
     int next_mapid;                     /* Next mapid to be used in mmap. */
+    void *esp;                          /* Last-known ESP upon context switch
+                                           into kernel mode. */
 #endif
 
     struct page_table *page_table;      /* Supplemental page table for virtual
