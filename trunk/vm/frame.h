@@ -16,13 +16,6 @@
 #define FRAME_PINNED 0x8           /* Set to protect frame from eviction. */
 #define FRAME_READONLY 0x10        /* Set when the frame is not writeable. */
 
-// Macros for checking particular status bits of a page_status
-#define IS_FRAME_ZERO(x) ((x) & FRAME_ZERO)
-#define IS_FRAME_SWAP(x) ((x) & FRAME_SWAP)
-#define IS_FRAME_MMAP(x) ((x) & FRAME_MMAP)
-#define IS_FRAME_PINNED(x) ((x) & FRAME_PINNED)
-#define IS_FRAME_READONLY(x) ((x) & FRAME_READONLY)
-
 typedef uint32_t frame_status;
 typedef int mmapid_t;
 
@@ -47,6 +40,7 @@ void frame_free (struct frame *frame);
 void frame_page_in (struct frame *frame);
 void frame_page_out (struct frame *frame);
 
+bool frame_get_attribute (struct frame *frame, uint32_t attribute);
 void frame_set_attribute (struct frame *frame, uint32_t attribute, bool on);
 
 void frame_set_mmap (struct frame *frame, mmapid_t id, uint32_t offset,

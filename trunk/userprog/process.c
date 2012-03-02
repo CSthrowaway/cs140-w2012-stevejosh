@@ -1028,6 +1028,7 @@ setup_stack (void **esp)
   /* Create a new zero-filled frame, load it into memory, then attach it to
      the running thread's page table. */
   struct frame *frame = frame_alloc ();
+  frame_set_attribute (frame, FRAME_PINNED, true);
   frame_set_zero (frame);
   frame_page_in (frame);
   struct page_table_entry *pte =

@@ -10,6 +10,7 @@
 #include "vm/swap.h"
 
 static struct list frames_allocated;
+static struct list_elem *clock_hand = NULL;
 static struct lock frame_lock;
 
 /* NOTE : Gets called by syscall_init in syscall.c. */
@@ -49,14 +50,14 @@ frame_free (struct frame *frame)
 static void
 frame_load_data (struct frame *frame)
 {
-  if (frame->status & FRAME_ZERO)
+  if (frame_get_attribute (frame, FRAME_ZERO))
     memset (frame->paddr, 0, PGSIZE);
-  else if (frame->status & FRAME_SWAP)
+  else if (frame_get_attribute (frame, FRAME_SWAP))
     {
       swap_read (frame->aux1, frame->paddr);
       swap_free (frame->aux1);
     }
-  else if (frame->status & FRAME_MMAP)
+  else if (frame_get_attribute (frame, FRAME_MMAP))
     {
       int fd = process_get_mmap_fd (frame->aux1);
       ASSERT (fd >= 0);
@@ -75,24 +76,41 @@ frame_load_data (struct frame *frame)
     }
 }
 
+static struct list_elem *
+clock_advance_hand (void)
+{
+  struct list_elem *old = clock_hand;
+  
+  if (list_size (&frames_allocated) == 0)
+    return clock_hand = NULL;
+
+  if (old == list_end (&frames_allocated))
+    return clock_hand = list_begin (&frames_allocated);
+  else
+    {
+      clock_hand = list_next (old);
+      return old;
+    }
+}
+
 static void
 frame_save_data (struct frame *frame)
 {
   /* If the frame started out as zero-filled page and was modified, we
      change it to be a swap page (since it is no longer all zeroes. */
-  if (frame->status & FRAME_ZERO)
+  if (frame_get_attribute (frame, FRAME_ZERO))
     {
-      frame->status &= ~FRAME_ZERO;
-      frame->status &= FRAME_SWAP;
+      frame_set_attribute (frame, FRAME_ZERO, false);
+      frame_set_attribute (frame, FRAME_SWAP, true);
     }
 
-  if (frame->status & FRAME_SWAP)
+  if (frame_get_attribute (frame, FRAME_SWAP))
   	{
       swapid_t id = swap_alloc ();
       swap_write (id, frame->paddr);
       frame->aux1 = id;
   	}
-  else if (frame->status & FRAME_MMAP)
+  else if (frame_get_attribute (frame, FRAME_MMAP))
     {
       int fd = process_get_mmap_fd (frame->aux1);
       fd_seek (fd, frame->aux2);
@@ -130,7 +148,10 @@ frame_page_out (struct frame *frame)
     frame_save_data (frame);
 
   /* Remove the frame from the allocated frames list. */
+  if (clock_hand == &frame->elem)
+    clock_hand = list_next (&frame->elem);
   list_remove (&frame->elem);
+  clock_advance_hand ();
   palloc_free_page (frame->paddr);
   frame->paddr = NULL;
 }
@@ -158,35 +179,21 @@ frame_was_accessed (struct frame *frame)
   return accessed;
 }
 
-// TODO TODO TODO TODO IMPLEMENT CLOCK ALGORITHM
-/* Chooses a frame to evict from the frames_allocated list, removing the
-   frame from the list in the process. Synchronized with the frame lock, so
-   that other processes don't try to evict it in the mean time.
-   Evicts the first non accessed page. */
+/* Uses the clock algorithm to choose the "best" frame for eviction, given
+   the candidates on the list of allocated frames. */
 static struct frame*
 frame_choose_eviction (void)
 {
-  struct frame *chosen = NULL;
-  struct list_elem *f;
-
-  for (f = list_begin (&frames_allocated);
-       f != list_end (&frames_allocated);
-       f = list_next (f))
+  while (true)
     {
-      struct frame *frame = list_entry (f, struct frame, elem);
-      if (!frame_was_accessed (frame) && !(frame->status & FRAME_PINNED))
-        {
-          chosen = frame;
-          break;
-        }
+      struct list_elem *candidate = clock_advance_hand ();
+      if (candidate == NULL) return NULL;
+
+      struct frame *frame = list_entry (candidate, struct frame, elem);
+      if (!frame_was_accessed (frame) &&
+          !frame_get_attribute (frame, FRAME_PINNED))
+        return frame;
     }
-
-  /* If we weren't able to find a frame to evict, just pick the
-     first in the allocated list. */
-  if (chosen == NULL)    
-    chosen = list_entry (list_begin (&frames_allocated), struct frame, elem);
-
-  return chosen;
 }
 
 /* Force the given frame into physical memory, acquiring a physical frame
@@ -209,11 +216,13 @@ frame_page_in (struct frame *frame)
       lock_release (&frame_lock);
 	    page = palloc_get_page (PAL_USER);
     }
-
+  
   frame->paddr = page;
   
   lock_acquire (&frame_lock);
   list_push_back (&frames_allocated, &frame->elem);
+  if (clock_hand == NULL)
+    clock_hand = &frame->elem;
   lock_release (&frame_lock);
 
   frame_load_data (frame);
@@ -226,6 +235,12 @@ frame_set_attribute (struct frame *frame, uint32_t attribute, bool on)
     frame->status |= attribute;
   else
     frame->status &= ~attribute;
+}
+
+bool
+frame_get_attribute (struct frame *frame, uint32_t attribute)
+{
+  return (frame->status & attribute) != 0;
 }
 
 /* Mark the given frame as mmapd. */
