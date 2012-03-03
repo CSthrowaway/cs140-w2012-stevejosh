@@ -423,51 +423,6 @@ process_exit (void)
     }
 }
 
-static void
-print_hash_elem (struct hash_elem *e, void *aux)
-{
-  struct page_table_entry *pte = hash_entry (e, struct page_table_entry, h_elem);
-  printf ("[%p] -> [%p]\n", pte->vaddr, pte->frame);
-}
-
-static void
-process_free_memory (void)
-{
-  struct list freed_entries;
-  list_init (&freed_entries);
-  lock_acquire (&thread_current ()->page_table->lock);
-  struct hash_iterator i;
-  hash_first (&i, &thread_current ()->page_table->table);
-
-  /* Since we don't want to modify the hash elements while iterating, we'll
-     just put them in a list and delete them later. */
-  while (hash_next (&i))
-    {
-      struct page_table_entry *pte =
-        hash_entry (hash_cur (&i), struct page_table_entry, h_elem);
-
-      /* Unpin the frame if it was pinned, then clear it from the the table. */
-      frame_set_attribute (pte->frame, FRAME_PINNED, false);
-      page_table_entry_clear (pte);
-      list_push_back (&freed_entries, &pte->l_elem);
-    }
-
-  struct list_elem *e;
-  for (e = list_begin (&freed_entries);
-       e != list_end (&freed_entries);)
-    {
-      struct page_table_entry *pte =
-        list_entry (e, struct page_table_entry, l_elem);
-      e = list_next(e);
-      page_table_entry_remove (pte);
-    }
-
-  ASSERT (hash_empty (&thread_current ()->page_table->table));
-  hash_destroy (&thread_current ()->page_table->table, NULL);    
-  lock_release (&thread_current ()->page_table->lock);
-  free (thread_current ()->page_table);
-}
-
 /* Must be called before a running process gets killed.
    Unlike process_exit, this function has access to the
    exit code of the process, and will make preparations
@@ -532,7 +487,7 @@ process_release (int exit_code)
   file_allow_write (thread_current ()->executable);
   file_close (thread_current ()->executable);
 
-  process_free_memory ();
+  page_table_free (thread_current ()->page_table);
   
   lock_release (&process_death_lock);
 }
@@ -607,7 +562,6 @@ process_get_mmap_entry (mmapid_t mapid)
 int
 process_get_mmap_fd (mmapid_t mapid)
 {
-  // TODO Synchron!
   struct mmap_table_entry *e = process_get_mmap_entry (mapid);
   return (e != NULL) ? e->fd : -1;
 }
@@ -615,12 +569,10 @@ process_get_mmap_fd (mmapid_t mapid)
 void
 process_remove_mmap (mmapid_t mapid)
 {
-  //printf ("...1\n");
   struct mmap_table_entry *mte = process_get_mmap_entry (mapid);
   ASSERT (mte != NULL);
   
   struct page_table *pt = thread_current ()->page_table;
-  lock_acquire (&pt->lock);
   struct hash_iterator i;
 
   /* We need to walk the supplemental page table to determine which pages
@@ -632,8 +584,7 @@ process_remove_mmap (mmapid_t mapid)
   struct list freed_entries;
   list_init (&freed_entries);
   hash_first (&i, &pt->table);
-  //printf ("(%d) MMAP Touching %p.\n", thread_current ()->tid, pt->table);
-  //printf ("...2\n");
+
   while (hash_next (&i))
     {
       struct hash_elem *h = hash_cur (&i);
@@ -659,11 +610,10 @@ process_remove_mmap (mmapid_t mapid)
       page_table_entry_remove (pte);
       e = next;
     }
-  lock_release (&pt->lock);
+
   /* Finally, clean up the mmap table entry. */
   list_remove (&mte->elem);
   free (mte);
-  //printf ("...F\n");
 }
 
 /* Walks through the beginning of each page address between begin and
@@ -808,6 +758,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
   off_t file_ofs;
   bool success = false;
   int i;
+  mmapid_t mmapid = -1;
 
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
@@ -836,8 +787,8 @@ load (const char *file_name, void (**eip) (void), void **esp)
       printf ("load: %s: error loading executable\n", file_name);
       goto done; 
     }
-    
-  mmapid_t mmapid = process_add_mmap_from_name (file_name);
+
+  mmapid = process_add_mmap_from_name (file_name);
 
   /* Read program headers. */
   file_ofs = ehdr.e_phoff;
@@ -912,8 +863,8 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  if (!success)
-    // TODO TODO TODO TODO TODO TODO TODO TODO CLEAN UP THE MMAP
+  if (!success && mmapid != -1)
+    process_remove_mmap (mmapid);
   
   file_close (file);
   return success;
@@ -997,7 +948,6 @@ load_segment (mmapid_t mmapid, off_t ofs, uint8_t *upage,
       frame_set_attribute (frame, FRAME_CODE, true);
       page_table_add_entry (thread_current ()->page_table,
                             (void *)(upage + i), frame);
-      //printf ("[%p-%p] : %d read bytes.\n", upage + i, upage + i + PGSIZE -1, read_bytes);
     }
 
   zero_bytes -= (ROUND_UP (read_bytes, PGSIZE) - read_bytes);
@@ -1010,7 +960,6 @@ load_segment (mmapid_t mmapid, off_t ofs, uint8_t *upage,
       frame_set_attribute (frame, FRAME_READONLY, !writable);
       page_table_add_entry (thread_current ()->page_table,
                             (void *)(upage + read_bytes + i), frame);
-      //printf ("[%p] : %d zero bytes.\n", upage + read_bytes + i, PGSIZE);
     }
   return true;
 }

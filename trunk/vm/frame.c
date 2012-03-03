@@ -245,7 +245,6 @@ frame_page_in (struct frame *frame)
      existing frame and steal its physical memory. */
   while (page == NULL)
     {
-      // TODO : Fix synchro.
       lock_acquire (&frame_lock);
       struct frame* frame_to_evict = frame_choose_eviction ();
       ASSERT (!frame_get_attribute (frame_to_evict, FRAME_PINNED));

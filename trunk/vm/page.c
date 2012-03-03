@@ -5,12 +5,6 @@
 #include "threads/vaddr.h"
 #include "vm/page.h"
 
-void
-page_init (void)
-{
-  // TODO : Anything here? If so, call it from syscall.c
-}
-
 /* Hash function for page table entries (uses virtual address). */
 static unsigned
 page_table_entry_hash (const struct hash_elem *e, void *aux UNUSED)
@@ -43,11 +37,42 @@ page_table_create (void)
   return t;
 }
 
+/* Free the given supplemental page table, also freeing up any remaining
+   entries in the process. */
 void
-page_table_free (struct page_table *ptable)
+page_table_free (struct page_table *pt)
 {
-  // TODO - Free up all of the entries
-  free (ptable);
+  struct list freed_entries;
+  list_init (&freed_entries);
+  struct hash_iterator i;
+  hash_first (&i, &pt->table);
+
+  /* Since we don't want to modify the hash elements while iterating, we'll
+     just put them in a list and delete them later. */
+  while (hash_next (&i))
+    {
+      struct page_table_entry *pte =
+        hash_entry (hash_cur (&i), struct page_table_entry, h_elem);
+
+      /* Unpin the frame if it was pinned, then clear it from the the table. */
+      frame_set_attribute (pte->frame, FRAME_PINNED, false);
+      page_table_entry_clear (pte);
+      list_push_back (&freed_entries, &pte->l_elem);
+    }
+
+  struct list_elem *e;
+  for (e = list_begin (&freed_entries);
+       e != list_end (&freed_entries);)
+    {
+      struct page_table_entry *pte =
+        list_entry (e, struct page_table_entry, l_elem);
+      e = list_next(e);
+      page_table_entry_remove (pte);
+    }
+
+  ASSERT (hash_empty (&pt->table));
+  hash_destroy (&pt->table, NULL);
+  free (pt);
 }
 
 /* Look up the given virtual address in the given page table, returning the
@@ -76,7 +101,7 @@ void*
 page_table_translate (struct page_table *ptable, const void* vaddr)
 {
   struct page_table_entry *pte = page_table_lookup (ptable, vaddr);
-  return (pte == NULL ) ? NULL : vaddr;
+  return (pte == NULL ) ? NULL : (void *)vaddr;
 }
 
 /* Page table entry comparator for lists. */
