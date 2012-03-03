@@ -12,10 +12,16 @@
 #define BEGIN lock_acquire (&l);
 #define END lock_release (&l);
 
+/* Holds a list of every frame that is currently resident in physical
+   memory. This is the list that we will use for the clock algorith. */
 static struct list frames_allocated;
+
+/* Holds the current pointer into the frames_allocated list which
+   signifies the next frame to be considered for eviction. */
 static struct list_elem *clock_hand = NULL;
+
+/* This lock must be acquired before manipulating frames_allocated. */
 struct lock frame_lock;
-struct lock l;
 
 /* NOTE : Gets called by syscall_init in syscall.c. */
 void
@@ -23,7 +29,6 @@ frame_init (void)
 {
   list_init (&frames_allocated);
   lock_init (&frame_lock);
-  lock_init (&l);
 }
 
 struct frame*
@@ -83,6 +88,8 @@ frame_load_data (struct frame *frame)
     }
 }
 
+/* Advance the pointer into the allocated frames list, wrapping around to
+   the beginning of the list if we reach the end. */
 static struct list_elem *
 clock_advance_hand (void)
   {
@@ -236,7 +243,6 @@ frame_choose_eviction (void)
 void
 frame_page_in (struct frame *frame)
 {
-  BEGIN
   ASSERT (frame->paddr == NULL);
 
   void *page = palloc_get_page (PAL_USER);
@@ -264,7 +270,6 @@ frame_page_in (struct frame *frame)
   if (clock_hand == NULL)
     clock_hand = &frame->elem;
   lock_release (&frame_lock);
-  END
 }
 
 void

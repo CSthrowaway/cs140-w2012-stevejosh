@@ -6,8 +6,8 @@
 
 /* Below are the various status bits that may reside in a page_status
    bitfield. Some are mutually exclusive, such as FRAME_ZERO, FRAME_SWAP,
-   and FRAME_FILE, while some may be mixed (for example, FRAME_SWAP,
-   FRAME_PINNED, FRAME_RESIDENT may all be on at the same time). */
+   and FRAME_MMAP, while some may be mixed (for example, FRAME_SWAP,
+   FRAME_PINNED, FRAME_LOCKED may all be on at the same time). */
 #define FRAME_ZERO      0x1        /* Set when the frame is zero-filled. */
 #define FRAME_SWAP      0x2        /* Set when the frame is to be loaded and
                                       saved to/from a swap slot. */
@@ -20,15 +20,12 @@
 #define FRAME_LOCKED    0x40       /* Set when the frame is not to be touched
                                       by anyone other than the locker. */
                                       
-typedef uint32_t frame_status;
 typedef int mmapid_t;
-
-typedef void* frame;
 
 struct frame
   {
     void *paddr;                    /* Physical address of this frame. */
-    frame_status status;
+    uint32_t status;                /* Status bits (see #defines above). */
     uint32_t aux1;                  /* Swap slot OR mmapid. */
     uint32_t aux2;                  /* mmap file offset. */
     uint32_t aux3;                  /* mmap read bytes. */

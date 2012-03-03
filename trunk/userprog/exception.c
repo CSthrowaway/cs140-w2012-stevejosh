@@ -158,7 +158,6 @@ page_fault (struct intr_frame *f)
   struct page_table *pt = thread_current ()->page_table;
   struct page_table_entry *entry = page_table_lookup (pt, fault_addr);
 
-  console_panic ();
   if (entry == NULL)
     {
       void *esp = user ? f->esp : thread_current ()->esp;
@@ -166,21 +165,17 @@ page_fault (struct intr_frame *f)
           fault_addr >= PHYS_BASE - MAX_STACK &&
           fault_addr >= (void*)((char *)esp - 32))
         {
-          //printf ("(%d) Stacking in %p. eip is %p\n", (int)page_fault_cnt, pg_round_down (fault_addr), f->eip);
           struct frame *frame = frame_alloc ();
           frame_set_zero (frame);
           struct page_table_entry *pte =
             page_table_add_entry (pt, pg_round_down (fault_addr), frame);
           page_table_entry_load (pte);
         }
-      else {
-        //printf ("Death at %p. eip is %p\n", pg_round_down (fault_addr), f->eip);
+      else
         goto kill_silent;
-      }
     }
   else
     {
-      //printf ("(%d) Faulting in %p. eip is %p\n", (int)page_fault_cnt, pg_round_down (fault_addr), f->eip);
       if ((entry->frame->status & FRAME_READONLY) && write)
         goto kill_silent;
 

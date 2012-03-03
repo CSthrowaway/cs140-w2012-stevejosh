@@ -20,7 +20,7 @@ Steve Lesser <sklesser@stanford.edu>
 >> preparing your submission, other than the Pintos documentation, course
 >> text, lecture notes, and course staff.
 
-   	 	 PAGE TABLE MANAGEMENT
+                 PAGE TABLE MANAGEMENT
                  =====================
 
 ---- DATA STRUCTURES ----
@@ -28,6 +28,51 @@ Steve Lesser <sklesser@stanford.edu>
 >> A1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
+
+// in page.h
+
+  /* page_table_entry defines the information that will be contained in the
+     supplemental page table. Each entry will be inserted into a process'
+     supplemental table, and is responsible for keeping track of a single
+     page of virtual memory. */
+  struct page_table_entry
+    {
+      struct hash_elem h_elem;      /* For wiring into a hash table. */
+      struct list_elem l_elem;      /* For wiring into a frame's user list. */
+      void* vaddr;                  /* Base virtual address of this page. */
+      struct frame* frame;          /* Pointer to this page's frame element. */
+      struct thread* thread;        /* Pointer to the relevant thread
+                                       containing the current page directory
+                                       and page table. */
+    };
+
+  /* page_table defines the supplemental page table contained in each process.
+     Note that each process owns a page table lock for synchronization of paging
+     during fault-handling. */
+  struct page_table
+    {
+      struct hash table;
+      struct lock lock;
+    };
+
+// in frame.h
+                                       
+  struct frame
+    {
+      void *paddr;                    /* Physical address of this frame. */
+      uint32_t status;                /* Status bits (see #defines above). */
+      uint32_t aux1;                  /* Swap slot OR mmapid. */
+      uint32_t aux2;                  /* mmap file offset. */
+      uint32_t aux3;                  /* mmap read bytes. */
+      struct list_elem elem;          /* List element for allocated list. */
+      struct list users;              /* List of all virtual pages using this
+                                         physical frame (will usually be a
+                                         single page). */
+    };
+
+// in struct thread (thread.h)
+    struct page_table *page_table;      /* Supplemental page table for virtual
+                                           memory management. */
 
 ---- ALGORITHMS ----
 
@@ -92,7 +137,7 @@ frame sharing between processes, which, unfortunately, we did not get around
 to in the end. However, we still feel that our design decisions made
 management of pages and frames quite conceptually simple.
 
-   		       PAGING TO AND FROM DISK
+                       PAGING TO AND FROM DISK
                        =======================
 
 ---- DATA STRUCTURES ----
@@ -100,6 +145,27 @@ management of pages and frames quite conceptually simple.
 >> B1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
+
+// in frame.c
+
+  /* Holds a list of every frame that is currently resident in physical
+     memory. This is the list that we will use for the clock algorith. */
+  static struct list frames_allocated;
+
+  /* Holds the current pointer into the frames_allocated list which
+     signifies the next frame to be considered for eviction. */
+  static struct list_elem *clock_hand = NULL;
+
+  /* This lock must be acquired before manipulating frames_allocated. */
+  struct lock frame_lock;
+
+// in swap.c
+
+  typedef uint32_t swapid_t;
+  static struct block *swap_block;      /* Swap partition. */
+  static struct bitmap *free_blocks;    /* true == free, false == allocated. */
+  static struct lock swap_alloc_lock;   /* For allocating or freeing slots.*/
+  static struct lock swap_io_lock;      /* For reading or writing slots. */
 
 ---- ALGORITHMS ----
 
@@ -237,7 +303,7 @@ struct. We didn't think it was appropriate for updating any single
 process's page table to cause all other processes to wait, hence we split
 the lock up per process.
 
-   	      MEMORY MAPPED FILES
+              MEMORY MAPPED FILES
               ===================
 
 ---- DATA STRUCTURES ----
@@ -245,6 +311,24 @@ the lock up per process.
 >> C1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
+
+// in process.h
+
+  /* An mmap_table_entry contains the information required to create an
+     mmap->fd mapping withing a process. These entries are inserted into the
+     process' mmap_table to enable tracking of all of the process' outstanding
+     mmaps. */
+  struct mmap_table_entry
+    {
+      struct list_elem elem;  /* List element for insertion into mmap_table. */
+      mmapid_t id;            /* Per-process unique mmap id. */
+      int fd;                 /* File descriptor for the file to which this mmap
+                                 is mapped. */
+    };
+
+// in frame.h
+
+  typedef int mmapid_t;
 
 ---- ALGORITHMS ----
 
