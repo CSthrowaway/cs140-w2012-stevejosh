@@ -370,22 +370,16 @@ validate_buffer (const char *buffer, unsigned size)
       unsigned offset = (size - i - 1);
       next += (offset < PGSIZE) ? offset : PGSIZE;
       pte = page_table_lookup (pt, (const void *)next);
-      if (pte == NULL)
-      page_table_entry_load (page_table_lookup (pt, (const void *)next));
+      if (pte == NULL) return NULL;
     }
 
-  // TODO TODO TODO TODO TODO TODO REMOVE THIS HACK (page_table_entry_load);
-  
-  /* Looks like the whole buffer exists, so we can return the trnaslated
-     beginning pointer. */
-  page_table_entry_load (page_table_lookup (pt, (const void *)buffer));
   return buffer;
 }
 
 static bool
 begin_page_operation (const char *buffer, bool writable)
 {
-  if (buffer >= PHYS_BASE) return false;
+  if ((void *)buffer >= PHYS_BASE) return false;
   struct page_table *pt = thread_current ()->page_table;
   struct page_table_entry *pte = page_table_lookup (pt, buffer);
   if (pte == NULL)
@@ -404,9 +398,10 @@ begin_page_operation (const char *buffer, bool writable)
       else
         return false;
     }
-  if (writable && (pte->frame->status & FRAME_READONLY)) return false;
+  if (writable && frame_get_attribute (pte->frame, FRAME_READONLY))
+    return false;
 
-  pte->frame->status |= FRAME_PINNED;
+  frame_set_attribute (pte->frame, FRAME_PINNED, true);
   page_table_entry_load (pte);
   ASSERT (pte->frame->paddr != NULL);
   return true;
@@ -417,7 +412,7 @@ end_page_operation (const char *buffer)
 {
   struct page_table *pt = thread_current ()->page_table;
   struct page_table_entry *pte = page_table_lookup (pt, buffer);
-  pte->frame->status &= (~FRAME_PINNED);
+  frame_set_attribute (pte->frame, FRAME_PINNED, false);
 }
 
 /* -- System Call #0 --
@@ -825,6 +820,7 @@ syscall_mmap (int fd, void *vaddr)
 
   if (!process_create_mmap_pages (id, vaddr))
     {
+      process_remove_mmap (id);
       // TODO : Remove the mmap from the process mmap table
       return -1;
     }

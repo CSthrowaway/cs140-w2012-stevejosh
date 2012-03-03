@@ -107,38 +107,40 @@ management of pages and frames quite conceptually simple.
 >> evicted.  Describe your code for choosing a frame to evict.
 
 When we want to evict a frame (frame_choose_eviction) we iterate through
-the frames_allocated list starting from our globally stored cursor
-and wrapping around the end into the front. We evict the first
-frame which was not accessed by any pages pointing at it and is not
-pinned. As we check each frame's page for whether it
-has been accessed we reset the accessed bit to be not accessed. This
-algorithm is equivalent to the clock algorithm.
+the frames_allocated list starting from our globally stored cursor and
+wrapping around the end into the front. We evict the first frame which
+was not accessed by any pages pointing at it and is not pinned or locked.
+As we check each frame's page for whether it has been, accessed we reset
+the accessed bit. This ensures that we will always be able to find a new
+page, although it might (in the worst case) require that we search
+through the entire allocated frame list more than once. This algorithm
+is equivalent to the clock algorithm.
 
 >> B3: When a process P obtains a frame that was previously used by a
 >> process Q, how do you adjust the page table (and any other data
 >> structures) to reflect the frame Q no longer has?
 
-When the frame that was previously used by process Q is evicted the frame
-stays connected to the page table but it's physical address becomes NULL
-and it is removed from the frames_allocated list and the entry in the
-process's page table is also removed. Then when a page in process P uses
-the physical memory that Q was previously using it updates it's frame
-structure to point to that physical memory. and adds itself to the
-frames_allocated list. The supplementary page table does not need to be
-updated (unless the page has not been accessed before in which case the
-page_table_entry is added and a new frame is created). 
+When the frame that was previously used by process Q is evicted, the frame
+remains connected to the supplemental page table, but the frame's paddr
+pointer becomes NULL and it is removed from the frames_allocated list.
+Additionally, the corresponding entry in Q's (hardware) page table is
+removed. This is the only information that we must change to reflect the
+transfer of the frame's ownership.
 
 >> B4: Explain your heuristic for deciding whether a page fault for an
 >> invalid virtual address should cause the stack to be extended into
 >> the page that faulted.
 
-First, on page faults we can look at the stack pointer by looking at
-either the intr_frame or the stored stack pointer in the current thread
-struct depending on whether the exception occurred in user mode or not. We
-then check if the fault address is less than (stack_pointer - 32), if it is
-then the access is invalid and the process is released. Otherwise if the
-fault address is also less than the PHYS_BASE then it is a valid virtual
-address and a new page entry is created.
+On page faults, we can look at the stack pointer by looking at either the
+intr_frame or the stored stack pointer in the current thread struct
+(depending on whether the exception occurred in user or kernel mode). Note
+that, in the syscall handler, we store the stack pointer so that we have
+access to esp in the event of a kernel-mode page fault). We then check if the
+fault address is less than (stack_pointer - 32) OR less than
+PHYS_BASE - MAX_STACK. If it is, then the access is invalid and the process
+is released. Otherwise, if the fault address is also less than PHYS_BASE,
+then we deem it a valid stack address and create a new stack page at the
+location.
 
 ---- SYNCHRONIZATION ----
 
@@ -168,6 +170,11 @@ avoided.
 >> to be evicted.  How do you ensure that Q cannot access or modify
 >> the page during the eviction process?  How do you avoid a race
 >> between P evicting Q's frame and Q faulting the page back in?
+
+Before beginning the eviction process, we mark the frame (call it F)
+with the FRAME_LOCKED flag, indicating that we don't want anyone else
+to touch the frame. We then remove the frame from Q's physical page
+table, so that it may no longer access F's memory.
 
 >> B7: Suppose a page fault in process P causes a page to be read from
 >> the file system or swap.  How do you ensure that a second process Q

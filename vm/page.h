@@ -30,7 +30,6 @@ struct page_table
     struct lock lock;
   };
 
-void page_init (void);
 struct page_table* page_table_create (void);
 void page_table_free (struct page_table *ptable);
 
