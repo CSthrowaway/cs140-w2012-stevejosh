@@ -4,11 +4,16 @@
 #include "threads/thread.h"
 #define MAX_STACK 1024 * 1024 * 10     /* The current stack limit is 10 MB. */
 
+/* An mmap_table_entry contains the information required to create an
+   mmap->fd mapping withing a process. These entries are inserted into the
+   process' mmap_table to enable tracking of all of the process' outstanding
+   mmaps. */
 struct mmap_table_entry
   {
-    struct list_elem elem;
-    mmapid_t id;
-    int fd;
+    struct list_elem elem;  /* List element for insertion into mmap_table. */
+    mmapid_t id;            /* Per-process unique mmap id. */
+    int fd;                 /* File descriptor for the file to which this mmap
+                               is mapped. */
   };
 
 tid_t process_execute (const char *file_name);
