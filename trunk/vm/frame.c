@@ -9,9 +9,13 @@
 #include "vm/frame.h"
 #include "vm/swap.h"
 
+#define BEGIN lock_acquire (&l);
+#define END lock_release (&l);
+
 static struct list frames_allocated;
 static struct list_elem *clock_hand = NULL;
-static struct lock frame_lock;
+struct lock frame_lock;
+struct lock l;
 
 /* NOTE : Gets called by syscall_init in syscall.c. */
 void
@@ -19,6 +23,7 @@ frame_init (void)
 {
   list_init (&frames_allocated);
   lock_init (&frame_lock);
+  lock_init (&l);
 }
 
 struct frame*
@@ -80,7 +85,7 @@ frame_load_data (struct frame *frame)
 
 static struct list_elem *
 clock_advance_hand (void)
-{
+  {
   struct list_elem *old = clock_hand;
   
   if (list_size (&frames_allocated) == 0)
@@ -137,7 +142,7 @@ frame_page_out (struct frame *frame, bool dying)
 {
   if (frame->paddr == NULL) return;
   ASSERT (!(frame->status & FRAME_PINNED));
-  
+
   /* We lock the frame so that nobody can see the intermediate results of
      this function. If another process faults on this frame, they are required
      to continually fault until the frame becomes unlocked. */
@@ -153,9 +158,8 @@ frame_page_out (struct frame *frame, bool dying)
        e != list_end (&frame->users);
        e = list_next (e))
     {
-      struct page_table_entry *p = list_entry (e, struct page_table_entry,
-                                               l_elem);
-      //printf ("(%d) pageout touching %p\n", thread_current ()->tid, p->thread->page_table->table);
+      struct page_table_entry *p =
+        list_entry (e, struct page_table_entry, l_elem);
       if (pagedir_is_dirty (p->thread->pagedir, p->vaddr))
         is_dirty = true;
       page_table_entry_deactivate (p);
@@ -176,11 +180,13 @@ frame_page_out (struct frame *frame, bool dying)
   if (clock_hand == &frame->elem)
     clock_hand = list_next (&frame->elem);
   list_remove (&frame->elem);
-  clock_advance_hand ();
+
+  ASSERT (frame->paddr != NULL);
   palloc_free_page (frame->paddr);
   frame->paddr = NULL;
 
   /* Finally, we can unlock the frame. */
+  ASSERT (frame_get_attribute (frame, FRAME_LOCKED));
   frame_set_attribute (frame, FRAME_LOCKED, false);
 }
 
@@ -196,9 +202,8 @@ frame_was_accessed (struct frame *frame)
        p != list_end (&frame->users);
        p = list_next (p))
     {
-      struct page_table_entry *pte = list_entry (p, struct page_table_entry,
-                                                 l_elem);
-      //printf ("thread: %p (%d), pagedir: %p, vaddr: %p\n", pte->thread, pte->thread->tid, pte->thread->pagedir, pte->vaddr);
+      struct page_table_entry *pte =
+        list_entry (p, struct page_table_entry, l_elem);
       if (pagedir_is_accessed (pte->thread->pagedir, pte->vaddr))
         {
           accessed = true;
@@ -231,8 +236,9 @@ frame_choose_eviction (void)
 void
 frame_page_in (struct frame *frame)
 {
+  BEGIN
   ASSERT (frame->paddr == NULL);
-  
+
   void *page = palloc_get_page (PAL_USER);
 
   /* If we weren't able to allocated a new page, we'll have to evict an
@@ -244,6 +250,7 @@ frame_page_in (struct frame *frame)
       struct frame* frame_to_evict = frame_choose_eviction ();
       ASSERT (!frame_get_attribute (frame_to_evict, FRAME_PINNED));
       ASSERT (!frame_get_attribute (frame_to_evict, FRAME_LOCKED));
+      ASSERT (frame_to_evict->paddr != NULL);
       frame_page_out (frame_to_evict, false);
       lock_release (&frame_lock);
       page = palloc_get_page (PAL_USER);
@@ -258,6 +265,7 @@ frame_page_in (struct frame *frame)
   if (clock_hand == NULL)
     clock_hand = &frame->elem;
   lock_release (&frame_lock);
+  END
 }
 
 void

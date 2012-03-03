@@ -424,6 +424,13 @@ process_exit (void)
 }
 
 static void
+print_hash_elem (struct hash_elem *e, void *aux)
+{
+  struct page_table_entry *pte = hash_entry (e, struct page_table_entry, h_elem);
+  printf ("[%p] -> [%p]\n", pte->vaddr, pte->frame);
+}
+
+static void
 process_free_memory (void)
 {
   struct list freed_entries;
@@ -452,10 +459,13 @@ process_free_memory (void)
       struct page_table_entry *pte =
         list_entry (e, struct page_table_entry, l_elem);
       e = list_next(e);
-      free (pte);
+      page_table_entry_remove (pte);
     }
-    
+
+  ASSERT (hash_empty (&thread_current ()->page_table->table));
+  hash_destroy (&thread_current ()->page_table->table, NULL);    
   lock_release (&thread_current ()->page_table->lock);
+  free (thread_current ()->page_table);
 }
 
 /* Must be called before a running process gets killed.
@@ -605,6 +615,7 @@ process_get_mmap_fd (mmapid_t mapid)
 void
 process_remove_mmap (mmapid_t mapid)
 {
+  //printf ("...1\n");
   struct mmap_table_entry *mte = process_get_mmap_entry (mapid);
   ASSERT (mte != NULL);
   
@@ -622,11 +633,12 @@ process_remove_mmap (mmapid_t mapid)
   list_init (&freed_entries);
   hash_first (&i, &pt->table);
   //printf ("(%d) MMAP Touching %p.\n", thread_current ()->tid, pt->table);
-
+  //printf ("...2\n");
   while (hash_next (&i))
     {
+      struct hash_elem *h = hash_cur (&i);
       struct page_table_entry *pte =
-        hash_entry (hash_cur (&i), struct page_table_entry, h_elem);
+        hash_entry (h, struct page_table_entry, h_elem);
 
       /* If the frame corresponding to this entry is MMAPd and has a matching
          mmapid (which would be stored in aux1), then mark it for removal. */
@@ -637,7 +649,6 @@ process_remove_mmap (mmapid_t mapid)
           list_push_back (&freed_entries, &pte->l_elem);
         }
     }
-
   /* Do the actual freeing of the supplemental page table entries. */
   struct list_elem *e;
   for (e = list_begin (&freed_entries); e != list_end (&freed_entries);)
@@ -648,11 +659,11 @@ process_remove_mmap (mmapid_t mapid)
       page_table_entry_remove (pte);
       e = next;
     }
-
   lock_release (&pt->lock);
   /* Finally, clean up the mmap table entry. */
   list_remove (&mte->elem);
   free (mte);
+  //printf ("...F\n");
 }
 
 /* Walks through the beginning of each page address between begin and
@@ -1012,6 +1023,7 @@ setup_stack (void **esp)
   /* Create a new zero-filled frame, load it into memory, then attach it to
      the running thread's page table. */
   struct frame *frame = frame_alloc ();
+  ASSERT (frame != NULL);
   frame_set_attribute (frame, FRAME_PINNED, true);
   frame_set_zero (frame);
   frame_page_in (frame);
