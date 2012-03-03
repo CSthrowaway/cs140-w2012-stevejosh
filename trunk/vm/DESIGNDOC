@@ -174,12 +174,26 @@ avoided.
 Before beginning the eviction process, we mark the frame (call it F)
 with the FRAME_LOCKED flag, indicating that we don't want anyone else
 to touch the frame. We then remove the frame from Q's physical page
-table, so that it may no longer access F's memory.
+table, so that it may no longer access F's memory. If Q tries to fault
+F back in, it will see that F has the FRAME_LOCKED flag set, and will
+recognize that it is not allowed to touch F. As such, it will return
+from the fault-handler, continually suffering faults until Q clears
+the locked flag. Note that this situation is rare enough that we
+decided to prefer a 'busy-waiting' solution over something more
+complicated.
 
 >> B7: Suppose a page fault in process P causes a page to be read from
 >> the file system or swap.  How do you ensure that a second process Q
 >> cannot interfere by e.g. attempting to evict the frame while it is
 >> still being read in?
+
+Suppose that P acquires a free frame, call it F. F is NOT placed on the
+list of allocated frames until *after* P finishes loading F (whether
+from a file or swap). Hence, Q won't see F as an option for eviction.
+Access to the allocated frames list is synchronized with a static lock
+in frame.c. Note that it's perfectly OK for Q to evict F as soon as P
+places F on the list - by that point in time, F is loaded and P must
+relinquish all expectations about whether or not F is actually in memory.
 
 >> B8: Explain how you handle access to paged-out pages that occur
 >> during system calls.  Do you use page faults to bring in pages (as
@@ -187,7 +201,20 @@ table, so that it may no longer access F's memory.
 >> into physical memory, or do you use some other design?  How do you
 >> gracefully handle attempted accesses to invalid virtual addresses?
 
+We chose to go with a locking mechanism. During system calls that require
+user-space buffer operations, we perform the buffer operations on
+contiguous pages in user-space, one page at a time. We first mark the
+page's frame with the FRAME_PINNED flag, then call frame_page_in to
+ensure that the frame is in physical memory. Note that the frame is not
+allowed to be evicted while this flag is set. frame_page_in is protected
+by the lock in frame.c, so it is not possible for the frame to be
+evicted after having been pinned and paged in.
 
+If, at any point, we detect that the buffer is not mapped to valid user
+virtual memory, we terminate the process. We perform this check *before*
+acquiring any resources that might need to be released in the event of
+failure, hence, we gracefully remove the requirement for "cleanup" in the
+event that we encounter a problem with the buffer.
 
 ---- RATIONALE ----
 
@@ -225,39 +252,40 @@ the lock up per process.
 >> memory subsystem.  Explain how the page fault and eviction
 >> processes differ between swap pages and other pages.
 
-Memory mapped pages are marked by the frame associated with the page
+Memory mapped pages are marked by the frame associated with the page as
 having an mmap flag set in addition to three auxilary pieces of
 information: the mmapid, the offset into the file of the start of the
-frame, and the amount of the page which is still part of the file (PGSIZE
-except for the last page).
+frame, and the amount of the page which is still part of the file (which
+is PGSIZE for all but the last page).
 
-On a page fault of a mmapped page a valid physical address is obtained
-and then the file information found in the frame struct is used to read
+On a page fault of a mmapped page, a valid physical address is obtained
+and then the aux information found in the frame struct is used to read
 the relevant part of the file into the physical address. If the remaining
 part of the file to be read in is less than a page in size then the rest
 of the page after the valid file parts is set to be 0. This is similar to
-reading in swap pages but the source is the file system instead
-of swap space. Additionally the relevant amount of the file has to be
-considered to potentially pad the end of a frame with 0's.
+reading in swap pages, but the source is the file system instead
+of swap space.
 
-When a mmapped page is evicted the pages referencing the relevant frame
-are checked if any of them are dirty. If any of them are dirty, then the the frame is
+When an mmapped page is evicted, the pages referencing the relevant frame
+are checked for dirtiness. If any of them are dirty, then the the frame is
 written out to the original file using the auxilary data found in the
-frame struct to know which file and how much of the file to write
-out. This differs from the swap pages only in the destination of the
+frame struct. This differs from the swap pages only in the destination of the
 writing and in accounting for the final page in a file which may write out
-less than a full page of data.
+less than a full page of data. Additionally, while an mmapped page is
+always written out when dirty, other pages are written out (to swap) only
+in the event that the process is *not* dying. If the process is dying,
+then non-mmapped pages don't need to be written to swap (because the process
+will never use them again). Dirty mmapped pages, however, are always
+written back to the file system.
 
 >> C3: Explain how you determine whether a new file mapping overlaps
 >> any existing segment.
 
 Before creating the supplementary page table entries required for the
-mmap, all the necessary pages are walked through and made sure there is
-not an already existing entry in the current page table. Only once all the
-pages are ensured to be uninitialized then all the supplementary page
-table entries are created. This whole process is done while locked under
-the per-process supplementary page table lock to ensure no new pages are
-added to the current process during this time.
+mmap, we walk through all the necessary pages and make sure that the pages
+aren't already mapping in the existing supplemental page table. If we
+succeed in doing so (i.e., the entire mmap region is free), then we carry
+out the mmap. Otherwise, we return an error status to the user process.
 
 ---- RATIONALE ----
 
@@ -268,19 +296,31 @@ added to the current process during this time.
 >> implementation either does or does not share much of the code for
 >> the two situations.
 
-Our mmap and executable demand-paged data does share a lot of
-implementation, in fact our executable loading uses the mmap functionality
-but just a different way of allocating the pages used. Each page required
-by the executable is inserted into the page table as an mmap page with
-FRAME_READONLY and FRAME_CODE flags set. Since each frame independently knows the
-mmapid, offset into the file, and amount of valid file they require, they can be lazily
-constructed and are incrementally added to the supplementary page table as
-the executable is scanned. This is a little different than the
-construction of an mmaped file made from a system call- which creates all
-the required pages at once in sequential order. However, once the
-executable is loaded or the system call mmap completes then 
-the two types types of mapped memory are not treated differently.
+Our mmap and executable demand-paged data shares a lot of implementation.
+In factn our executable loading uses the mmap functionality, with only a
+slight alteration. First, executable loading allocates pages in a different
+way - since it is at the mercy of the parameters of load_segment, it must
+allocate a given number of pages at a time, according to the read_bytes and
+zero_bytes parameters.
 
+The only other difference between mmap and our executable pages is that
+executable pages are marked with the FRAME_CODE flag. FRAME_CODE is an edge-
+case-handling flag. The only situation in which this flag is needed is if
+the code and data segment overlap on a given page (i.e., there are some
+number of read bytes and some number of data bytes). Then the user process
+may try to write to the data part of the page, which must succeed. However,
+since the page was partially loaded from the executable file, it is marked
+as an MMAP page. But, unlike a real mmap page, it cannot be saved back to
+the file when dirtied (because one cannot write to the executable). Hence,
+the FRAME_CODE flag tells the frame handler that a dirty MMAP page which is
+also a CODE page should be converted to a SWAP page, so that the written
+data remains intact and the kernel doesn't try to write to the executable.
+
+We felt that sharing implementations was definitely the best way to go here,
+because more code paths meant more opportunities to make mistakes, and more
+long debugging sessions (which, by the way, we have already had enough of).
+So it made sense to leverage our mmap implementation as much as possible to
+help executable loading.
 
        	      SURVEY QUESTIONS
               ================
