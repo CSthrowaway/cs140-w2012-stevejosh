@@ -16,6 +16,17 @@ Steve Lesser <sklesser@stanford.edu>
 >> If you have any preliminary comments on your submission, notes for the
 >> TAs, or extra credit, please give them here.
 
+There's a race :( We're aware of a race in our code, and spent over 20+
+hours of solid debugging time trying to figure out where we were going
+wrong. Unfortunately, we were unable to win out in the end, even after
+taking a late day. We would *greatly* appreciate it if the grader could
+enlighten us if we have made any obvious mistakes that could have lead
+to the failures seen in page-parallel.
+
+Note that we did, at one point, try replacing our FRAME_LOCKED mechanism
+with a per-process page-table-lock, and we did not see any improvements
+in the condition.
+
 >> Please cite any offline or online sources you consulted while
 >> preparing your submission, other than the Pintos documentation, course
 >> text, lecture notes, and course staff.
@@ -51,8 +62,8 @@ Steve Lesser <sklesser@stanford.edu>
      during fault-handling. */
   struct page_table
     {
-      struct hash table;
-      struct lock lock;
+      struct hash table;            /* page_table_entry hash table. */
+      struct lock lock;             /* Unused, per-page-table lock. */
     };
 
 // in frame.h
@@ -215,22 +226,23 @@ location.
 >> textbook for an explanation of the necessary conditions for
 >> deadlock.)
 
-There are two types of locks, the single global frame lock and the per
-process supplementary page table locks. The global frame_lock controls
-creation and eviction of frames in addition to any operations on the
-global frames_allocated list which is a list of all frames which currently
-are currently loaded into physical memory. The per process supplementary
-page table locks are used to ensure any changes to the local page table
-attributes are safe and cause minimal waiting since other threads should
-not have to wait for updating attributes on an unrelated thread's page
-table.
+We synchronize operations that involve the allocated-frames list using
+a static lock in frame.c. Other operations are synchronized with the
+help of the FRAME_LOCKED flag, which we set in the status field of a
+frame that we wish to mark as "untouchable" (e.g., undergoing the
+process of eviction).
 
-There are at most two locks acquired with one of them being the
-frame_lock and the other being a page table lock. The frame_lock is always 
-acquired first. With these two conditions we are ensured there are no
-orderings of lock acquires which create a circularity of
-requests/ownership. Without circularity of ownership deadlocks are
-avoided.
+All locks in our system are acquired in a particular order. Since there
+are no per-process locks, it is simple to acquire the locks in a
+consistent order. This ensures that there is no circularity in the wait
+graph, which implies that no deadlocks can exist.
+
+In particular, one can conceive of a situation in which each page
+table has a lock. In this case, it would be non-trivial to acquire the
+locks, since one might want to lock the current process' page table,
+then later acquire a lock on another page table. This behavior could
+easily lead to deadlock, however, we have no such situations in which
+the locking order is ambigious.
 
 >> B6: A page fault in process P can cause another process Q's frame
 >> to be evicted.  How do you ensure that Q cannot access or modify
@@ -246,7 +258,8 @@ recognize that it is not allowed to touch F. As such, it will return
 from the fault-handler, continually suffering faults until Q clears
 the locked flag. Note that this situation is rare enough that we
 decided to prefer a 'busy-waiting' solution over something more
-complicated.
+complicated, such as using condition variables to signal that the frame
+is no longer locked.
 
 >> B7: Suppose a page fault in process P causes a page to be read from
 >> the file system or swap.  How do you ensure that a second process Q
@@ -291,17 +304,22 @@ event that we encounter a problem with the buffer.
 >> where your design falls along this continuum and why you chose to
 >> design it this way.
 
-For different parts of the VM system we use different numbers of
-locks. For controlling the creation, eviction, and loading of frames there
-is a single frame_lock due to the global nature of frames which can be
-accessed by multiple processes. We thought this seemed the safest approach
-for ensuring multiple processes would not run into race conditions from
-sharing the same global frame pool. For controlling the insertion and
-removal of elements in the supplementary page tables, we use per-process
-locks built into the page_table struct which is a part of every thread
-struct. We didn't think it was appropriate for updating any single
-process's page table to cause all other processes to wait, hence we split
-the lock up per process.
+Our design uses a fairly small amount of locking, primarily towards the goal
+of a simple-to-understand system. We wanted to prevent the use of excessive
+locking, especially with respect to supplementary page tables, as it quickly
+becomes difficult to analyze the dependency graph of such a situation. We
+chose to use locks only for critical shared structures such as the list of
+allocated frames.
+
+In order to synchronize access to supplemental page table entries, we
+observed that we could solve the issue with the FRAME_LOCKED flag, thanks to
+the order imposed by the nature of the system (a frame will not fault until
+it is paged out of physical memory, so if we set the flag before paging it
+out, we ensure that it will be locked when it faults).
+
+Hence, on the continuum of granularity, our system falls into the fairly-
+high-parallelism range, due to the small number of locks in play. We like
+our design because it is simple to understand!
 
               MEMORY MAPPED FILES
               ===================
@@ -418,12 +436,21 @@ the quarter.
 >> In your opinion, was this assignment, or any one of the three problems
 >> in it, too easy or too hard?  Did it take too long or too little time?
 
+Not conceptually hard, but extremely difficult to debug. Not sure what can
+be done to make this better :/ The project took about 2.5x as much time as
+the last one, at least for us.
+
 >> Did you find that working on a particular part of the assignment gave
 >> you greater insight into some aspect of OS design?
 
 >> Is there some particular fact or hint we should give students in
 >> future quarters to help them solve the problems?  Conversely, did you
 >> find any of our guidance to be misleading?
+
+It took us a long time to figure out that the executable loader sometimes
+puts data and code on the same page. This baffled us, and seems like it
+should be mentioned elsewhere, because it's really not intuitive (and is
+a rather special case that one has to handle).
 
 >> Do you have any suggestions for the TAs to more effectively assist
 >> students, either for future quarters or the remaining projects?
