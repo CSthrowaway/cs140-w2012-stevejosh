@@ -156,15 +156,14 @@ page_fault (struct intr_frame *f)
   user = (f->error_code & PF_U) != 0;
 
   struct page_table *pt = thread_current ()->page_table;
-  lock_acquire (&pt->lock);
   struct page_table_entry *entry = page_table_lookup (pt, fault_addr);
 
-  //console_panic ();
+  console_panic ();
   if (entry == NULL)
     {
-      // TODO impose a stack growth limit
       void *esp = user ? f->esp : thread_current ()->esp;
       if (fault_addr < PHYS_BASE &&
+          fault_addr >= PHYS_BASE - MAX_STACK &&
           fault_addr >= (void*)((char *)esp - 32))
         {
           //printf ("(%d) Stacking in %p. eip is %p\n", (int)page_fault_cnt, pg_round_down (fault_addr), f->eip);
@@ -186,34 +185,18 @@ page_fault (struct intr_frame *f)
         goto kill_silent;
 
       if (frame_get_attribute (entry->frame, FRAME_LOCKED))
-        {
-          lock_release (&pt->lock);
-          return;
-        }
+        return;
       else
         frame_set_attribute (entry->frame, FRAME_LOCKED, true);
 
       ASSERT (entry->frame->paddr == NULL);
       page_table_entry_load (entry);
+      ASSERT (entry->frame->paddr != NULL);
       frame_set_attribute (entry->frame, FRAME_LOCKED, false);
     }
-
-  //printf ("leaving.\n");
-/*  else
-  {  
-    printf ("Page fault at %p: %s error %s page in %s context.\n",
-            fault_addr,
-            not_present ? "not present" : "rights violation",
-            write ? "writing" : "reading",
-            user ? "user" : "kernel");
-    kill (f);
-  }
-*/
-  lock_release (&pt->lock);
   return;
 
 kill_silent:
-  lock_release (&pt->lock);
   process_release (-1);
   thread_exit ();
 }

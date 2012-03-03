@@ -2,6 +2,7 @@
 #define USERPROG_PROCESS_H
 
 #include "threads/thread.h"
+#define MAX_STACK 1024 * 1024 * 10     /* The current stack limit is 10 MB. */
 
 struct mmap_table_entry
   {

@@ -100,6 +100,7 @@ page_table_add_entry (struct page_table *ptable, const void* vaddr,
   ASSERT (vaddr == pg_round_down (vaddr));
 
   struct page_table_entry *entry = malloc (sizeof(struct page_table_entry));
+
   if (entry == NULL)
     PANIC ("page_table_add_entry: unable to allocate page table entry");
 
@@ -151,8 +152,12 @@ page_table_entry_clear (struct page_table_entry *pte)
 {
   if (list_size (&pte->frame->users) == 1)
     frame_free (pte->frame);
+  else
+    list_remove (&pte->l_elem);
   pte->frame = NULL;
-  pte->vaddr = NULL;
+  
+  /* Note that we can't NULL out the virtual address just yet, because the
+     hash function still needs access to it. */
 }
 
 /* Removes the given element from the page table. */
