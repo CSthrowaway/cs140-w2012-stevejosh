@@ -9,13 +9,11 @@
 static struct block *swap_block;      /* Swap partition. */
 static struct bitmap *free_blocks;    /* true == free, false == allocated. */
 static struct lock swap_alloc_lock;   /* For allocating or freeing slots.*/
-static struct lock swap_io_lock;      /* For reading or writing slots. */
 
 void
 swap_init (void)
 {
   lock_init (&swap_alloc_lock);
-  lock_init (&swap_io_lock);
   
   swap_block = block_get_role (BLOCK_SWAP);
   if (swap_block != NULL)
@@ -61,14 +59,12 @@ void
 swap_read (swapid_t id, char *buf)
 {
   ASSERT (swap_block != NULL);
-  lock_acquire (&swap_io_lock);
   int i;
   for (i = 0; i < BLOCKS_PER_PAGE; ++i)
     {
       block_read (swap_block, id * BLOCKS_PER_PAGE + i, buf);
       buf += BLOCK_SECTOR_SIZE;
     }
-  lock_release (&swap_io_lock);
 }
 
 /* Writes a page of data to the given swap slot.
@@ -77,12 +73,10 @@ void
 swap_write (swapid_t id, const char *buf)
 {
   ASSERT (swap_block != NULL);
-  lock_acquire (&swap_io_lock);
   int i;
   for (i = 0; i < BLOCKS_PER_PAGE; ++i)
     {
       block_write (swap_block, id * BLOCKS_PER_PAGE + i, buf);
       buf += BLOCK_SECTOR_SIZE;
     }
-  lock_release (&swap_io_lock);
 }
