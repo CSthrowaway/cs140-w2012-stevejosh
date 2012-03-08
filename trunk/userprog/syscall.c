@@ -441,7 +441,8 @@ begin_page_operation (const char *buffer, bool writable)
   ASSERT (pte->frame->paddr != NULL);
   return true;
 #else
-  return pagedir_get_page (thread_current ()->pagedir, buffer) != NULL;
+  return is_user_vaddr (buffer) &&
+         pagedir_get_page (thread_current ()->pagedir, buffer) != NULL;
 #endif
 }
 
