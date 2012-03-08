@@ -279,8 +279,10 @@ start_process (void *process_information_)
 
   /* Create the process' supplemental page table, and acquire a lock on
      it. */
+#ifdef VM
   thread_current ()->page_table = page_table_create ();
   lock_acquire (&thread_current ()->page_table->lock);
+#endif
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -289,7 +291,9 @@ start_process (void *process_information_)
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
 
+#ifdef VM
   lock_release (&thread_current ()->page_table->lock);
+#endif
 
   /* Set the my_status pointer to point to the parent's child status
      block, as given in the process_information page. */
@@ -317,7 +321,9 @@ start_process (void *process_information_)
   /* If load or argument parsing failed, quit. */
   if (!success)
   {
+#ifdef VM
     page_table_free (thread_current ()->page_table);
+#endif
     process_change_status (PROCESS_FAILED);
     palloc_free_page (process_information_);
     filesys_free_open_files (thread_current ());
@@ -467,6 +473,7 @@ process_release (int exit_code)
         s->status = PROCESS_ORPHANED;
     }
 
+#ifdef VM
   /* Clean up all outstanding mmaps. */
   for (e = list_begin (&thread_current ()->mmap_table);
        e != list_end (&thread_current ()->mmap_table);)
@@ -479,6 +486,7 @@ process_release (int exit_code)
       e = list_next (e);
       process_remove_mmap (mte->id);
     }
+#endif
 
   /* Free all of the open files that were associated with this process. */  
   filesys_free_open_files (thread_current ());
@@ -487,7 +495,9 @@ process_release (int exit_code)
   file_allow_write (thread_current ()->executable);
   file_close (thread_current ()->executable);
 
+#ifdef VM
   page_table_free (thread_current ()->page_table);
+#endif
   
   lock_release (&process_death_lock);
 }
@@ -508,7 +518,7 @@ process_activate (void)
   tss_update ();
 }
 
-
+#ifdef VM
 /* Opens a new file from file_name and stores the file descriptor into the
    current thread's mmapid. */
 mmapid_t
@@ -675,6 +685,7 @@ process_create_mmap_pages (mmapid_t mapid, void *vaddr)
   lock_release (&pt->lock);
   return true;
 }
+#endif
 
 /* We load ELF binaries.  The following definitions are taken
    from the ELF specification, [ELF1], more-or-less verbatim.  */
@@ -741,9 +752,9 @@ struct Elf32_Phdr
 
 static bool setup_stack (void **esp);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
-static bool load_segment (mmapid_t mmapid, off_t ofs, uint8_t *upage,
-                          uint32_t read_bytes, uint32_t zero_bytes,
-                          bool writable);
+static bool load_segment (struct file *file, mmapid_t mmapid, off_t ofs,
+                          uint8_t *upage, uint32_t read_bytes,
+                          uint32_t zero_bytes, bool  writable);
 
 /* Loads an ELF executable from FILE_NAME into the current thread.
    Stores the executable's entry point into *EIP
@@ -788,7 +799,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
       goto done; 
     }
 
+#ifdef VM
   mmapid = process_add_mmap_from_name (file_name);
+#endif
 
   /* Read program headers. */
   file_ofs = ehdr.e_phoff;
@@ -841,7 +854,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
                   zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
                 }
               
-              if (!load_segment (mmapid, file_page, (void *) mem_page,
+              if (!load_segment (file, mmapid, file_page, (void *) mem_page,
                                  read_bytes, zero_bytes, writable))
                 goto done;
               //hex_dump (mem_page, mem_page, read_bytes + zero_bytes, true);
@@ -863,9 +876,12 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
+
+#ifdef VM
   if (!success && mmapid != -1)
     process_remove_mmap (mmapid);
-  
+#endif
+
   file_close (file);
   return success;
 }
@@ -915,6 +931,26 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
   return true;
 }
 
+/* Adds a mapping from user virtual address UPAGE to kernel
+   virtual address KPAGE to the page table.
+   If WRITABLE is true, the user process may modify the page;
+   otherwise, it is read-only.
+   UPAGE must not already be mapped.
+   KPAGE should probably be a page obtained from the user pool
+   with palloc_get_page().
+   Returns true on success, false if UPAGE is already mapped or
+   if memory allocation fails. */
+static bool
+install_page (void *upage, void *kpage, bool writable)
+{
+  struct thread *t = thread_current ();
+
+  /* Verify that there's not already a page at that virtual
+     address, then map our page there. */
+  return (pagedir_get_page (t->pagedir, upage) == NULL
+          && pagedir_set_page (t->pagedir, upage, kpage, writable));
+}
+
 /* Loads a segment starting at offset OFS in FILE at address
    UPAGE.  In total, READ_BYTES + ZERO_BYTES bytes of virtual
    memory are initialized, as follows:
@@ -930,13 +966,14 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
    Return true if successful, false if a memory allocation error
    or disk read error occurs. */
 static bool
-load_segment (mmapid_t mmapid, off_t ofs, uint8_t *upage,
+load_segment (struct file *file, mmapid_t mmapid, off_t ofs, uint8_t *upage,
               uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
 {
   ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
 
+#ifdef VM
   uint32_t i;
   for (i = 0; i < read_bytes; i += PGSIZE)
     {
@@ -962,6 +999,43 @@ load_segment (mmapid_t mmapid, off_t ofs, uint8_t *upage,
                             (void *)(upage + read_bytes + i), frame);
     }
   return true;
+#else
+  file_seek (file, ofs);
+  while (read_bytes > 0 || zero_bytes > 0) 
+    {
+      /* Calculate how to fill this page.
+         We will read PAGE_READ_BYTES bytes from FILE
+         and zero the final PAGE_ZERO_BYTES bytes. */
+      size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
+      size_t page_zero_bytes = PGSIZE - page_read_bytes;
+
+      /* Get a page of memory. */
+      uint8_t *kpage = palloc_get_page (PAL_USER);
+      if (kpage == NULL)
+        return false;
+
+      /* Load this page. */
+      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
+        {
+          palloc_free_page (kpage);
+          return false; 
+        }
+      memset (kpage + page_read_bytes, 0, page_zero_bytes);
+
+      /* Add the page to the process's address space. */
+      if (!install_page (upage, kpage, writable)) 
+        {
+          palloc_free_page (kpage);
+          return false; 
+        }
+
+      /* Advance. */
+      read_bytes -= page_read_bytes;
+      zero_bytes -= page_zero_bytes;
+      upage += PGSIZE;
+    }
+  return true;
+#endif
 }
 
 /* Create a minimal stack by mapping a zeroed page at the top of
@@ -969,6 +1043,7 @@ load_segment (mmapid_t mmapid, off_t ofs, uint8_t *upage,
 static bool
 setup_stack (void **esp) 
 {
+#ifdef VM
   /* Create a new zero-filled frame, load it into memory, then attach it to
      the running thread's page table. */
   struct frame *frame = frame_alloc ();
@@ -983,4 +1058,19 @@ setup_stack (void **esp)
   page_table_entry_activate (pte);
   *esp = PHYS_BASE;
   return true;
+#else
+  uint8_t *kpage;
+  bool success = false;
+
+  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+  if (kpage != NULL) 
+    {
+      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
+      if (success)
+        *esp = PHYS_BASE;
+      else
+        palloc_free_page (kpage);
+    }
+  return success;
+#endif
 }

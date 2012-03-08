@@ -23,6 +23,7 @@ int process_wait (tid_t);
 void process_exit (void);
 void process_activate (void);
 
+#ifdef VM
 mmapid_t process_add_mmap_from_name (const char *file_name);
 mmapid_t process_add_mmap_from_fd (int fd);
 void process_remove_mmap (mmapid_t mapid);
@@ -30,4 +31,6 @@ int process_get_mmap_fd (mmapid_t mapid);
 
 bool process_create_mmap_pages (mmapid_t mmapid, void *vaddr);
 void process_write_mmap_to_file (mapid_t mapping);
+#endif
+
 #endif /* userprog/process.h */

@@ -155,6 +155,7 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
+#ifdef VM
   struct page_table *pt = thread_current ()->page_table;
   struct page_table_entry *entry = page_table_lookup (pt, fault_addr);
 
@@ -190,6 +191,7 @@ page_fault (struct intr_frame *f)
       frame_set_attribute (entry->frame, FRAME_LOCKED, false);
     }
   return;
+#endif
 
 kill_silent:
   process_release (-1);
