@@ -110,7 +110,9 @@ syscall_init (void)
              filesys_fileref_func,
              filesys_fileref_less, NULL);
   process_init ();
+#ifdef VM
   frame_init ();
+#endif
 }
 
 /* Hash function for fd_elems. */
@@ -339,6 +341,7 @@ validate_str (const char *vstr, int max_length)
   return max_length + 1;
 }
 
+#ifdef VM
 /* Checks that the given buffer is entirely valid virtual memory. If the
    buffer is valid, returns the physical address of the buffer. Otherwise,
    returns NULL. Additionally, will return NULL if writable is true and any
@@ -375,10 +378,42 @@ validate_buffer (const char *buffer, unsigned size)
 
   return buffer;
 }
+#else
+static const void*
+validate_buffer (const char *buffer, unsigned size)
+{
+  if (size == 0) return buffer;
+
+  /* Try to translate the first address of the buffer. If this fails, we
+     know it's a bad buffer. */
+  const char *pos = translate_vaddr(buffer);
+  if (pos == NULL) return NULL;
+
+  const char *next = buffer;
+
+  /* Now, check that every page between the beginning and the end of the
+     buffer is actually mapped into memory. Otherwise, a clever user could
+     potentially make us crash by giving us a buffer that appears to exist
+     at both ends but has gaps in it (e.g., take an address in the code
+     segment and add a size that reaches up to the stack...) */
+  unsigned i;
+  for (i = 0; i < size; i += PGSIZE)
+    {
+      unsigned offset = (size - i - 1);
+      next += (offset < PGSIZE) ? offset : PGSIZE;
+      if (translate_vaddr (next) == NULL) return NULL;      
+    }
+
+  /* Looks like the whole buffer exists, so we can return the trnaslated
+     beginning pointer. */
+  return pos;
+}
+#endif
 
 static bool
 begin_page_operation (const char *buffer, bool writable)
 {
+#ifdef VM
   if ((void *)buffer >= PHYS_BASE) return false;
   struct page_table *pt = thread_current ()->page_table;
   struct page_table_entry *pte = page_table_lookup (pt, buffer);
@@ -405,14 +440,19 @@ begin_page_operation (const char *buffer, bool writable)
   page_table_entry_load (pte);
   ASSERT (pte->frame->paddr != NULL);
   return true;
+#else
+  return pagedir_get_page (thread_current ()->pagedir, buffer) != NULL;
+#endif
 }
 
 static void
 end_page_operation (const char *buffer)
 {
+#ifdef VM
   struct page_table *pt = thread_current ()->page_table;
   struct page_table_entry *pte = page_table_lookup (pt, buffer);
   frame_set_attribute (pte->frame, FRAME_PINNED, false);
+#endif
 }
 
 /* -- System Call #0 --
@@ -812,6 +852,7 @@ syscall_close (int fd)
 static mapid_t
 syscall_mmap (int fd, void *vaddr)
 {
+#ifdef VM
   if (vaddr == 0 || vaddr >= PHYS_BASE || fd < 2 ||
       (pg_round_down (vaddr) != vaddr)) return -1;
 
@@ -825,6 +866,10 @@ syscall_mmap (int fd, void *vaddr)
       return -1;
     }
   return id;
+#else
+  PANIC ("syscall_mmap: virtual memory must be activated for mmap");
+  return -1;
+#endif
 }
 
 /* -- System Call #14 --
@@ -832,14 +877,20 @@ syscall_mmap (int fd, void *vaddr)
 static void
 syscall_munmap (mapid_t mapid)
 {
+#ifdef VM
   process_remove_mmap (mapid);
+#else
+  PANIC ("syscall_munmap: virtual memory must be activated for mmap");
+#endif
 }
 
 
 static void
 syscall_handler (struct intr_frame *f)
 {
+#ifdef VM
   thread_current ()->esp = f->esp;
+#endif
   /* Attempt to translate the stack pointer to a physical address. */
   const void* esp = translate_vaddr(f->esp);
   if (esp == NULL)  goto abort;
