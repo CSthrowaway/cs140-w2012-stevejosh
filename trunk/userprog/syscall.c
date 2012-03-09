@@ -26,24 +26,15 @@ static void syscall_handler (struct intr_frame *);
 
 static unsigned filesys_fdhash_func (const struct hash_elem *e,
                                      void *aux);
-static unsigned filesys_fileref_func (const struct hash_elem *e,
-                                      void *aux);
 
 static bool filesys_fdhash_less (const struct hash_elem *a,
                                  const struct hash_elem *b,
                                  void *aux UNUSED);
-static bool filesys_fileref_less (const struct hash_elem *a,
-                                    const struct hash_elem *b,
-                                    void *aux UNUSED);
 static struct file* filesys_get_file (int fd);
 
 static struct lock filesys_lock;    /* Lock for file system access. */
 static struct hash filesys_fdhash;  /* Hash table mapping fds to
                                        struct file*s. */
-static struct hash filesys_fileref; /* Hash table for counting number of
-                                       open handles to a file and
-                                       whether it's been marked for
-                                       deletion. */
 
 /* Gives the number of arguments expected for a given system
    call number. Useful to unify the argument-parsing code in
@@ -81,23 +72,6 @@ struct fd_elem
   struct file *file;                /* File system file handle. */
 };
 
-/* A fileref_elem encapsulates information about a particular file's
-   reference count - that is, how many outstanding FDs reference
-   the file. It also indicates whether the file is marked for deletion
-   or not. */
-struct fileref_elem
-{
-  struct hash_elem h_elem;          /* Element hash table insertion. */
-  int inumber;                      /* inode number specifying the
-                                       file. */
-  int count;                        /* Number of existing references to
-                                       this file. */
-  bool delete;                      /* Whether the file has been marked
-                                       for deleteion by a previous remove
-                                       system call. */
-  char name[NAME_MAX + 1];          /* Name of the file. */
-};
-
 void
 syscall_init (void) 
 {
@@ -106,9 +80,6 @@ syscall_init (void)
   hash_init (&filesys_fdhash,
              filesys_fdhash_func,
              filesys_fdhash_less, NULL);
-  hash_init (&filesys_fileref,
-             filesys_fileref_func,
-             filesys_fileref_less, NULL);
   process_init ();
 #ifdef VM
   frame_init ();
@@ -123,14 +94,6 @@ filesys_fdhash_func (const struct hash_elem *e, void *aux UNUSED)
   return (unsigned)elem->fd;
 }
 
-/* Hash function for fileref_elems. */
-static unsigned
-filesys_fileref_func (const struct hash_elem *e, void *aux UNUSED)
-{
-  struct fileref_elem *elem = hash_entry(e, struct fileref_elem, h_elem);
-  return (unsigned)elem->inumber;
-}
-
 /* Comparator for fd_elems. */
 static bool
 filesys_fdhash_less (const struct hash_elem *a,
@@ -140,17 +103,6 @@ filesys_fdhash_less (const struct hash_elem *a,
   struct fd_elem *a_e = hash_entry(a, struct fd_elem, h_elem);
   struct fd_elem *b_e = hash_entry(b, struct fd_elem, h_elem);
   return (a_e->fd < b_e->fd);
-}
-
-/* Comparator for fd_elems. */
-static bool
-filesys_fileref_less (const struct hash_elem *a,
-                        const struct hash_elem *b,
-                        void *aux UNUSED)
-{
-  struct fileref_elem *a_e = hash_entry (a, struct fileref_elem, h_elem);
-  struct fileref_elem *b_e = hash_entry (b, struct fileref_elem, h_elem);
-  return (a_e->inumber < b_e->inumber);
 }
 
 /* Acquires the file system lock. */
@@ -190,77 +142,6 @@ filesys_get_fdelem (int fd)
   return (thread_current ()->tid == fd_elem->owner_pid) ? fd_elem : NULL;
 }
 
-/* Returns the fileref_elem (stored in the global fileref hash table)
-   associated with the given inode*. Returns NULL if not found. */
-static struct fileref_elem*
-filesys_get_fileref_from_inode (struct inode* i)
-{
-  struct fileref_elem search;
-  search.inumber = inode_get_inumber (i);
-
-  struct hash_elem *found;
-  found = hash_find (&filesys_fileref, &search.h_elem);
-
-  if (found == NULL)
-    return NULL;
-
-  struct fileref_elem *fileref_hash_entry =
-    hash_entry (found, struct fileref_elem, h_elem);
-  return fileref_hash_entry;
-}
-
-/* Returns the fileref_elem (stored in the global fileref hash table)
-   associated with the given file*. Returns NULL if not found. */
-static struct fileref_elem*
-filesys_get_fileref (struct file* f)
-{
-  return filesys_get_fileref_from_inode (file_get_inode (f));
-}
-
-/* Returns the fileref_elem name member of the file corresponding to the
-   given file descriptor fd. */
-const char*
-filesys_get_filename_from_fd (int fd)
-{
-  struct file* f = filesys_get_file (fd);
-  if (f != NULL)
-    return (filesys_get_fileref (f))->name;
-  else
-    return NULL;
-}
-
-/* Closes the given file. In doing so, properly decrements the global
-   reference count associated with the file, removing it if necessary. */
-static void
-filesys_close_file (struct file* f)
-{
-  struct fileref_elem* fileref = filesys_get_fileref(f);
-  ASSERT(fileref != NULL);
-  fileref->count--;
-
-  /* If we hold the last reference to this file, then we are responsible
-     for cleaning up the reference as well as removing the file if
-     necessary. */
-  if (fileref->count == 0)
-    {
-      hash_delete (&filesys_fileref, &fileref->h_elem);
-
-      /* If the file reference indicates that the file must be deleted,
-         then we must do so, using the filename stored in the reference.
-         Otherwise, we just close the file as normal. */
-      if (fileref->delete)
-        filesys_remove (fileref->name);
-      else
-        file_close (f);
-      free (fileref);
-    }
-    
-  /* If others are still holding references to this file, we don't have
-     to worry about removing the reference; we just close the file. */
-  else
-    file_close (f);
-}
-
 /* Frees the resources associated with the given file descriptor
    element. This includes removing it from the global fd hash table,
    removing it from the owning thread's fd list, and freeing the
@@ -268,7 +149,7 @@ filesys_close_file (struct file* f)
 static void
 filesys_free_fdelem (struct fd_elem *elem)
 {
-  filesys_close_file (elem->file);
+  file_close (elem->file);
   hash_delete (&filesys_fdhash, &elem->h_elem);
   list_remove (&elem->l_elem);
   free (elem);
@@ -554,21 +435,7 @@ syscall_remove (const char *file)
   /* Make sure the file exists. */
   if (dir_lookup (dir_open_root (), file, &inode))
     {
-      /* Retrieve the fileref entry for this file. If the file is
-         currently opened by other processes, we must mark it for
-         deletion. Otherwise, we can go ahead and delete it. */
-      fileref = filesys_get_fileref_from_inode(inode);
-
-      if (fileref == NULL)
-        success = filesys_remove (file);
-      else if (fileref->count == 0)
-        {
-          hash_delete (&filesys_fileref, &fileref->h_elem);
-          success = filesys_remove (file);
-          free (fileref);
-        }
-      else
-          fileref->delete = true;
+      filesys_remove (file);
       success = true;
     }
   else
@@ -600,43 +467,6 @@ fd_open (const char *file)
       unlock_filesys ();
       return -1;
     }
-  
-  struct fileref_elem* fileref = filesys_get_fileref(handle);
-
-  /* If the file doesn't already exist in the reference table, then we must
-     create a new reference count for it and set the count to 1. Otherwise,
-     we simply increment the existing reference count. */
-  if (fileref == NULL)
-    {
-      fileref = malloc (sizeof (struct fileref_elem));
-
-      /* If malloc failed, clean up and return an error code. */
-      if (fileref == NULL)
-        {
-          free (newhash);
-          file_close (handle);
-          unlock_filesys ();
-          return -1;
-        }
-      
-      fileref->inumber = inode_get_inumber (file_get_inode (handle));
-      fileref->count = 1;
-      fileref->delete = false;
-      strlcpy (fileref->name, file, NAME_MAX + 1);
-      hash_insert (&filesys_fileref, &fileref->h_elem);
-    }
-  else {
-    /* If the file has already been marked for deletion, we shouldn't let
-       anyone else open it, even though it still exists. */
-    if (fileref->delete)
-      {
-        file_close (handle);
-        unlock_filesys ();
-        return -1;
-      }
-
-    fileref->count++;
-  }
 
   /* Initialize and insert the fd only after we know that the fileref
      operations have succeeded. */
