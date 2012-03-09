@@ -49,6 +49,9 @@ cache_init (void)
     }
 }
 
+/* Force the given cache slot to write its data out to disk. Note that the
+   slot's sector number will also be cleared for synchronization purposes.
+   NOTE : Assumes that cache_lock has already been acquired. */
 static void
 cache_slot_flush (int slot)
 {
@@ -59,7 +62,8 @@ cache_slot_flush (int slot)
   
   /* In order to ensure that someone else doesn't try to use this slot while
      we're writing the data out to disk, we need to both lock the slot AND
-     make it look like no sector occupies it. */
+     make it look like no sector occupies it. That way, no one will ever
+     bother us. */
   cache_slot[slot].status |= CACHE_LOCKED;
   cache_slot[slot].sector = -1;
   lock_release (&cache_lock);
@@ -68,31 +72,43 @@ cache_slot_flush (int slot)
   block_write (fs_device, sector, cache_block[slot].data);
   lock_release (&io_lock);
 
+  /* Finally, clear the locked and dirty flags. The slot now represents an
+     empty slot that may be acquired by someone else for use with a different
+     sector. */
   lock_acquire (&cache_lock);
   cache_slot[slot].status &= ~CACHE_LOCKED;
   cache_slot[slot].status &= ~CACHE_DIRTY;
 }
 
+/* Force the given cache slot to load sector data for the given sector from
+   disk.
+   NOTE : Assumes that cache_lock has already been acquired. */
 static void
 cache_slot_load (int slot, int sector)
 {
   ASSERT (slot >= 0 && slot < CACHE_SIZE);
   ASSERT (sector >= 0);
   
+  /* Before we perform the I/O, make it look like this cache slot is locked,
+     but fill in the sector field. This will make sure that no one evicts us,
+     but will allow other threads interested in reading the same sector to wait
+     on us instead of spawning their own I/O jobs. */
   cache_slot[slot].status |= CACHE_LOCKED;
-  cache_slot[slot].sector = -1;
+  cache_slot[slot].sector = sector;
   lock_release (&cache_lock);
 
   lock_acquire (&io_lock);
   block_read (fs_device, sector, cache_block[slot].data);
   lock_release (&io_lock);
 
+  /* Finally, we can unlock the slot and signal anyone who was waiting on us
+     to finish. */
   lock_acquire (&cache_lock);
   cache_slot[slot].status &= ~CACHE_LOCKED;
-  cache_slot[slot].sector = sector;
   cond_broadcast (&cache_slot[slot].cond, &cache_lock);
 }
-
+/*
+   NOTE : Assumes that cache_lock has already been acquired. */
 static int
 cache_alloc (void)
 {
@@ -102,9 +118,13 @@ cache_alloc (void)
     slot_to_evict = random_ulong() % CACHE_SIZE;
   } while (cache_slot[slot_to_evict].status & CACHE_LOCKED);
 
+  /* Lock the slot so that no one else tries to grab it while we're waiting for
+     it to become free. Then, wait for all operations on the slot to finish. */
+  cache_slot[slot_to_evict].status |= CACHE_LOCKED;
   while (cache_slot[slot_to_evict].in_use > 0)
     cond_wait (&cache_slot[slot_to_evict].cond, &cache_lock);
 
+  /* If the slot is dirty, we need to flush it to disk. */
   if (cache_slot[slot_to_evict].status & CACHE_DIRTY)
     cache_slot_flush (slot_to_evict);
 
