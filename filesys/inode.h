@@ -5,6 +5,9 @@
 #include "filesys/off_t.h"
 #include "devices/block.h"
 
+/* Below are the status bits for an inode. */
+#define INODE_DIR 0x1                   /* Set when inode is a directory. */
+
 struct bitmap;
 
 void inode_init (void);
@@ -19,5 +22,8 @@ off_t inode_write_at (struct inode *, const void *, off_t size, off_t offset);
 void inode_deny_write (struct inode *);
 void inode_allow_write (struct inode *);
 off_t inode_length (const struct inode *);
+
+bool inode_get_attribute (struct inode *, uint32_t attribute);
+void inode_set_attribute (struct inode *, uint32_t attribute, bool on);
 
 #endif /* filesys/inode.h */

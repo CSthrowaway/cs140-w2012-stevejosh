@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <threads/synch.h>
 #include <vm/page.h>
+#include <filesys/directory.h>
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -168,6 +169,10 @@ struct thread
                                            into kernel mode. */
     struct page_table *page_table;      /* Supplemental page table for virtual
                                            memory management. */
+#endif
+
+#ifdef FILESYS
+    struct dir *cwd;                     /* Current working directory. */
 #endif
 
     /* Owned by thread.c. */

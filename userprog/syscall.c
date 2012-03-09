@@ -714,6 +714,53 @@ syscall_munmap (mapid_t mapid UNUSED)
 #endif
 }
 
+/* -- System Call #15 --
+   Changes the current working directory of the process to dir. */
+static bool
+syscall_chdir (const char *dir UNUSED)
+{
+  return true;
+}
+
+/* -- System Call #16 --
+   Creates the directory dir, returns true if successful, false on
+   failure. Fails if dir already exists or if any directory named in dir
+   (besides the last) does not already exist. */
+static bool
+syscall_mkdir (const char* dir UNUSED)
+{
+  return true;
+}
+
+/* -- System Call #17 --
+   Reads a directory entry from file descriptor fd which must represent a
+   directory. If successful, stores the null-terminated file name in name
+   and returns true, otherwise returns false. (..) and (.) are not
+   returned. */
+static bool
+syscall_readdir (int fd UNUSED, char* name UNUSED)
+{
+  return false;
+}
+
+/* -- System Call #18 --
+   Returns true if fd represents a directory, false if it represents an
+   ordinary file. */
+static bool
+syscall_isdir (int fd UNUSED)
+{
+  return false;
+}
+
+/* -- System Call #19 --
+   Returns the inode number of the inode associated with fd. The sector of
+   the inode is used as the inode number. */
+static int
+syscall_inumber (int fd UNUSED)
+{
+  return 2;
+}
+
 
 static void
 syscall_handler (struct intr_frame *f)
@@ -812,6 +859,26 @@ syscall_handler (struct intr_frame *f)
     case SYS_MUNMAP:
       ret = false;
       syscall_munmap ((mapid_t)arg[0]);
+      break;
+    case SYS_CHDIR:
+      ret = true;
+      ret_val = syscall_chdir ((const char *)arg[0]);
+      break;
+    case SYS_MKDIR:
+      ret = true;
+      ret_val = syscall_mkdir ((const char*)arg[0]);
+      break;
+    case SYS_READDIR:
+      ret = true;
+      ret_val = syscall_readdir ((int)arg[0], (char*)arg[1]);
+      break;
+    case SYS_ISDIR:
+      ret = true;
+      ret_val = syscall_isdir ((int)arg[0]);
+      break;
+    case SYS_INUMBER:
+      ret = true;
+      ret_val = syscall_inumber ((int)arg[0]);
       break;
   }
  
