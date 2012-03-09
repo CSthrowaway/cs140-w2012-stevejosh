@@ -219,12 +219,12 @@ lock_acquire (struct lock *lock)
   if (!thread_mlfqs) // If using priority scheduler
     {
       if (lock->holder != NULL)
-	{
-	  thread_current ()->waiting_on = lock;
-	  thread_donate_priority (thread_current ());
-	}
+	      {
+	        thread_current ()->waiting_on = lock;
+	        thread_donate_priority (thread_current ());
+	      }
     }
-  
+
   sema_down (&lock->semaphore);
 
   lock->holder = thread_current ();
