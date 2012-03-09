@@ -172,7 +172,7 @@ struct thread
 #endif
 
 #ifdef FILESYS
-    struct dir *cwd;                     /* Current working directory. */
+    block_sector_t cwd;                 /* Sector of working dir. */
 #endif
 
     /* Owned by thread.c. */
