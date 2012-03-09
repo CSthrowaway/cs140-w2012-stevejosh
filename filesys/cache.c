@@ -52,7 +52,10 @@ cache_init (void)
 static void
 cache_slot_flush (int slot)
 {
+  ASSERT (slot >= 0 && slot < CACHE_SIZE);
+
   int sector = cache_slot[slot].sector;
+  ASSERT (sector >= 0);
   
   /* In order to ensure that someone else doesn't try to use this slot while
      we're writing the data out to disk, we need to both lock the slot AND
@@ -63,16 +66,19 @@ cache_slot_flush (int slot)
 
   lock_acquire (&io_lock);
   block_write (fs_device, sector, cache_block[slot].data);
-  cache_slot[slot].status = 0;
   lock_release (&io_lock);
 
   lock_acquire (&cache_lock);
   cache_slot[slot].status &= ~CACHE_LOCKED;
+  cache_slot[slot].status &= ~CACHE_DIRTY;
 }
 
 static void
 cache_slot_load (int slot, int sector)
 {
+  ASSERT (slot >= 0 && slot < CACHE_SIZE);
+  ASSERT (sector >= 0);
+  
   cache_slot[slot].status |= CACHE_LOCKED;
   cache_slot[slot].sector = -1;
   lock_release (&cache_lock);
@@ -104,15 +110,17 @@ cache_alloc (void)
 
   cache_slot[slot_to_evict].status = 0;
   cache_slot[slot_to_evict].sector = -1;
-  return -1;
+  return slot_to_evict;
 }
 
 /* Search the buffer cache for a slot containing the given sector. Returns -1
    if the given sector is not in the buffer cache.
    NOTE : Assumes that cache_lock has already been acquired. */
 static int
-cache_get (block_sector_t sector)
+cache_get (int sector)
 {
+  ASSERT (sector >= 0);
+  
   int i;
   for (i = 0; i < CACHE_SIZE; ++i)
     {
@@ -130,8 +138,10 @@ cache_get (block_sector_t sector)
    given sector (which is guaranteed to be in a slot once this function
    returns to the caller). */
 static int
-cache_begin_operation (block_sector_t sector)
+cache_begin_operation (int sector)
 {
+  ASSERT (sector >= 0);
+  
   lock_acquire (&cache_lock);
   int slot;
 
@@ -141,6 +151,7 @@ cache_begin_operation (block_sector_t sector)
       if (slot < 0)
         {
           slot = cache_alloc ();
+          ASSERT (slot >= 0);
           cache_slot_load (slot, sector);
         }
       else
@@ -174,11 +185,16 @@ cache_begin_operation (block_sector_t sector)
 static void
 cache_end_operation (int slot, bool written)
 {
+  ASSERT (slot >= 0 && slot < CACHE_SIZE);
+  
   lock_acquire (&cache_lock);
   cache_slot[slot].in_use--;
   if (written)
     cache_slot[slot].status |= CACHE_DIRTY;
   cond_broadcast (&cache_slot[slot].cond, &cache_lock);
+
+  // TODO : Remove this line, do intelligent flushing (delayed write).
+  cache_slot_flush (slot);
   lock_release (&cache_lock);
 }
 
@@ -186,18 +202,31 @@ cache_end_operation (int slot, bool written)
    available. If the sector is not already in the cache, it will be brought in
    for future use. */
 void
-cache_read (block_sector_t sector, void *buffer)
+cache_read (block_sector_t sector, void *buffer, off_t off, unsigned size)
 {
+  ASSERT (off + size <= BLOCK_SECTOR_SIZE);
+  
   int slot = cache_begin_operation (sector);
-  memcpy (buffer, cache_block[slot].data, BLOCK_SECTOR_SIZE);
+  memcpy (buffer, cache_block[slot].data + off, size);
   cache_end_operation (slot, false);
 }
 
 /* Writes the given sector to the buffer cache (and, later, to disk). */
 void
-cache_write (block_sector_t sector, const void *data)
+cache_write (block_sector_t sector, const void *data, off_t off, unsigned size)
+{
+  ASSERT (off + size <= BLOCK_SECTOR_SIZE);
+
+  int slot = cache_begin_operation (sector);  
+  memcpy (cache_block[slot].data + off, data, size);
+  cache_end_operation (slot, true);
+}
+
+/* Equivalent to writing all zeroes to the given sector. */
+void
+cache_zero (block_sector_t sector)
 {
   int slot = cache_begin_operation (sector);  
-  memcpy (cache_block[slot].data, data, BLOCK_SECTOR_SIZE);  
+  memset (cache_block[slot].data, 0, BLOCK_SECTOR_SIZE);
   cache_end_operation (slot, true);
 }
