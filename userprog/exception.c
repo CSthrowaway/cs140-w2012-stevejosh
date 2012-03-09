@@ -191,9 +191,15 @@ page_fault (struct intr_frame *f)
       frame_set_attribute (entry->frame, FRAME_LOCKED, false);
     }
   return;
+kill_silent:
+#else
+  printf ("Page fault at %p: %s error %s page in %s context.\n",
+          fault_addr,
+          not_present ? "not present" : "rights violation",
+          write ? "writing" : "reading",
+          user ? "user" : "kernel");
 #endif
 
-kill_silent:
   process_release (-1);
   thread_exit ();
 }

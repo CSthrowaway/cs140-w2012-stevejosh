@@ -292,7 +292,7 @@ validate_buffer (const char *buffer, unsigned size)
 #endif
 
 static bool
-begin_page_operation (const char *buffer, bool writable)
+begin_page_operation (const char *buffer UNUSED, bool writable UNUSED)
 {
 #ifdef VM
   if ((void *)buffer >= PHYS_BASE) return false;
@@ -328,7 +328,7 @@ begin_page_operation (const char *buffer, bool writable)
 }
 
 static void
-end_page_operation (const char *buffer)
+end_page_operation (const char *buffer UNUSED)
 {
 #ifdef VM
   struct page_table *pt = thread_current ()->page_table;
@@ -430,7 +430,6 @@ syscall_remove (const char *file)
   lock_filesys ();
 
   bool success;
-  struct fileref_elem* fileref;
 
   /* Make sure the file exists. */
   if (dir_lookup (dir_open_root (), file, &inode))
@@ -681,7 +680,7 @@ syscall_close (int fd)
    Maps the file open as fd into consecutive virtual pages of the current
    process starting at addr. */
 static mapid_t
-syscall_mmap (int fd, void *vaddr)
+syscall_mmap (int fd UNUSED, void *vaddr UNUSED)
 {
 #ifdef VM
   if (vaddr == 0 || vaddr >= PHYS_BASE || fd < 2 ||
@@ -706,7 +705,7 @@ syscall_mmap (int fd, void *vaddr)
 /* -- System Call #14 --
    Unmaps the mapping designated by mapping. */
 static void
-syscall_munmap (mapid_t mapid)
+syscall_munmap (mapid_t mapid UNUSED)
 {
 #ifdef VM
   process_remove_mmap (mapid);
