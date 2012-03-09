@@ -59,7 +59,7 @@ static long long user_ticks;    /* # of timer ticks in user programs. */
 static real load_avg;           /* load average for BSD scheduling */
 
 /* Scheduling. */
-#define TIME_SLICE 4            /* # of timer ticks to give each thread. */
+#define TIME_SLICE 1            /* # of timer ticks to give each thread. */
 static unsigned thread_ticks;   /* # of timer ticks since last yield. */
 
 /* If false (default), use round-robin scheduler.
