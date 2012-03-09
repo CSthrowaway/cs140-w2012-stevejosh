@@ -5,8 +5,9 @@
 #include <string.h>
 #include "filesys/filesys.h"
 #include "filesys/free-map.h"
-#include "threads/malloc.h"
 #include "filesys/cache.h"
+#include "threads/malloc.h"
+#include "threads/synch.h"
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
@@ -26,6 +27,7 @@ struct inode
     int open_cnt;                       /* Number of openers. */
     bool removed;                       /* True if deleted, false otherwise. */
     int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
+    struct lock lock;
   };
 
 /* On-disk inode.
@@ -84,7 +86,8 @@ block_to_sector (const struct inode_disk *inode, unsigned block)
     }
 }
 
-static void
+#if 0
+static void UNUSED
 inode_print (const struct inode_disk *inode)
 {
   printf ("[%p]: %d blocks\n", inode, inode->blocks);
@@ -94,9 +97,10 @@ inode_print (const struct inode_disk *inode)
   printf ("\n");
 }
 
-static void
-inode_validate (const struct inode_disk *inode)
+static void UNUSED
+inode_validate_disk (const struct inode_disk *inode)
 {
+  ASSERT (inode->length <= inode->blocks * BLOCK_SECTOR_SIZE);
   int i;
   for (i = 0; i < inode->blocks; ++i)
     {
@@ -112,22 +116,26 @@ inode_validate (const struct inode_disk *inode)
     }
 }
 
+static void UNUSED
+inode_validate (const struct inode *inode)
+{
+  struct inode_disk in;
+  cache_read (inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
+  inode_validate_disk (&in);
+}
+#endif
+
 /* Returns the block device sector that contains byte offset POS
-   within INODE.
-   Returns -1 if INODE does not contain data for a byte at offset
-   POS. */
+   within INODE. */
 static block_sector_t
 byte_to_sector (const struct inode *inode, off_t pos) 
 {
   ASSERT (inode != NULL);
   
-  struct inode_disk inode_contents;
-  cache_read(inode->sector, &inode_contents, 0, BLOCK_SECTOR_SIZE);
-  
-  if (pos < inode_contents.length)
-    return block_to_sector (&inode_contents, pos / BLOCK_SECTOR_SIZE);
-  else
-    return -1;
+  struct inode_disk in;
+  cache_read(inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
+  ASSERT (pos < (off_t)(in.blocks * BLOCK_SECTOR_SIZE));
+  return block_to_sector (&in, pos / BLOCK_SECTOR_SIZE);
 }
 
 /* List of open inodes, so that opening a single inode twice
@@ -153,7 +161,7 @@ allocate_zeroed_block (void)
 }
 
 static void
-inode_extend (struct inode_disk *inode)
+inode_extend_block (struct inode_disk *inode)
 {
   uint32_t blocks = inode->blocks;
   ASSERT (blocks < INODE_L2_END);
@@ -200,6 +208,29 @@ inode_extend (struct inode_disk *inode)
   inode->blocks++;
 }
 
+/* Allocates enough disk sectors for the given inode to be able to hold size
+   more bytes. Does NOT change the length field of the inode (for
+   synchronization purposes.
+   NOTE : Assumes that the caller has already acquired a lock on the given
+          inode. */
+static void
+inode_extend (struct inode *inode, unsigned size)
+{
+  struct inode_disk in;
+  cache_read (inode->sector, &in, 0, BLOCK_SECTOR_SIZE);  
+
+  int original_length = in.length;
+  in.length += size;
+  while ((off_t)(in.blocks * BLOCK_SECTOR_SIZE) < in.length)
+    inode_extend_block (&in);
+
+  /* Set the length back to what it was, we don't want to tamper with the
+     inode's length field. */
+  in.length = original_length;
+
+  cache_write (inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
+}
+
 /* Initializes an inode with LENGTH bytes of data and
    writes the new inode to sector SECTOR on the file system
    device.
@@ -228,7 +259,7 @@ inode_create (block_sector_t sector, off_t length)
 	      {
 	        size_t i;
 	        for (i = 0; i < sectors; i++) 
-            inode_extend (disk_inode);
+            inode_extend_block (disk_inode);
 	      }
 	    cache_write (sector, disk_inode, 0, BLOCK_SECTOR_SIZE);
       success = true;
@@ -269,6 +300,7 @@ inode_open (block_sector_t sector)
   inode->open_cnt = 1;
   inode->deny_write_cnt = 0;
   inode->removed = false;
+  lock_init (&inode->lock);
   return inode;
 }
 
@@ -349,6 +381,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
 
       /* Number of bytes to actually copy out of this sector. */
       int chunk_size = size < min_left ? size : min_left;
+
       if (chunk_size <= 0)
         break;
       cache_read (sector_idx, buffer + bytes_read, sector_ofs, chunk_size);
@@ -364,9 +397,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
 
 /* Writes SIZE bytes from BUFFER into INODE, starting at OFFSET.
    Returns the number of bytes actually written, which may be
-   less than SIZE if end of file is reached or an error occurs.
-   (Normally a write at end of file would extend the inode, but
-   growth is not yet implemented.) */
+   less than SIZE if an error occurs. */
 off_t
 inode_write_at (struct inode *inode, const void *buffer_, off_t size,
                 off_t offset) 
@@ -377,19 +408,28 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   if (inode->deny_write_cnt)
     return 0;
 
+  off_t inode_left = inode_length (inode) - offset;
+  off_t grow_size = 0;
+  
+  /* If we don't have enough space left to perform this write, then we need to
+     lock the inode and extend it to make room. Note that we do NOT change the
+     inode's length field until AFTER we have finished our write. */
+  if (inode_left < size)
+    {
+      lock_acquire (&inode->lock);
+      grow_size = size - inode_left;
+      inode_extend (inode, grow_size);
+    }
+    
   while (size > 0) 
     {
       /* Sector to write, starting byte offset within sector. */
       block_sector_t sector_idx = byte_to_sector (inode, offset);
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
-
-      /* Bytes left in inode, bytes left in sector, lesser of the two. */
-      off_t inode_left = inode_length (inode) - offset;
       int sector_left = BLOCK_SECTOR_SIZE - sector_ofs;
-      int min_left = inode_left < sector_left ? inode_left : sector_left;
-
+      
       /* Number of bytes to actually write into this sector. */
-      int chunk_size = size < min_left ? size : min_left;
+      int chunk_size = size < sector_left ? size : sector_left;
       if (chunk_size <= 0)
         break;
       cache_write (sector_idx, buffer + bytes_written, sector_ofs, chunk_size);
@@ -398,6 +438,23 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       size -= chunk_size;
       offset += chunk_size;
       bytes_written += chunk_size;
+    }
+
+  /* If we locked the inode, we should release the lock. We also need to update
+     the inode's length field to reflect the extension. Note that we do this
+     last so that other processes cannot see the intermediate result of the
+     extension operation (it will not appear as though the file has grown until
+     we change the inode's length). */
+  if (grow_size > 0)
+    {
+      /* Note that we use dynamic memory here to prevent a kernel stack
+         overflow. */
+      struct inode_disk *in = malloc (sizeof (struct inode_disk));
+      cache_read (inode->sector, in, 0, BLOCK_SECTOR_SIZE);
+      in->length += grow_size;
+      cache_write (inode->sector, in, 0, BLOCK_SECTOR_SIZE);
+      lock_release (&inode->lock);
+      free (in);
     }
 
   return bytes_written;
@@ -427,7 +484,7 @@ inode_allow_write (struct inode *inode)
 off_t
 inode_length (const struct inode *inode)
 {
-  struct inode_disk inode_contents;
-  cache_read(inode->sector, &inode_contents, 0, BLOCK_SECTOR_SIZE);
-  return inode_contents.length;
+  struct inode_disk in;
+  cache_read(inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
+  return in.length;
 }
