@@ -13,12 +13,14 @@
 #define INODE_MAGIC 0x494e4f44
 
 /* Various counts for keeping track of multi-level block indices in inodes. */
-#define INODE_L0_BLOCKS     ((BLOCK_SECTOR_SIZE / sizeof (uint32_t)) - 5)
+#define INODE_L0_BLOCKS     ((BLOCK_SECTOR_SIZE / sizeof (uint32_t)) - 6)
 #define INODE_L1_BLOCKS     (BLOCK_SECTOR_SIZE / sizeof (uint32_t))
 #define INODE_L1_END        (INODE_L0_BLOCKS + INODE_L1_BLOCKS)
 #define INODE_L2_BLOCKS     (INODE_L1_BLOCKS * INODE_L1_BLOCKS)
 #define INODE_L2_END        (INODE_L1_END + INODE_L2_BLOCKS)
 
+/* Below are the status bits for an inode. */
+#define INODE_DIR 0x1                   /* Set when inode is a directory. */
 /* In-memory inode. */
 struct inode
   {
@@ -26,7 +28,8 @@ struct inode
     block_sector_t sector;              /* Sector number of disk location. */
     int open_cnt;                       /* Number of openers. */
     bool removed;                       /* True if deleted, false otherwise. */
-    int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
+    int deny_write_cnt;                 /* 0: writes ok, >0: deny
+					   writes. */
     struct lock lock;
   };
 
@@ -37,7 +40,8 @@ struct inode_disk
     off_t length;                           /* File size in bytes. */
     unsigned magic;                         /* Magic number. */
     uint32_t blocks;                        /* Number of allocated blocks. */
-
+    uint32_t status;                        /* Status bits including
+					       whether file or directory. */
     uint32_t l2;                            /* Sector of doubly indirect block. */
     uint32_t l1;                            /* Sector of indirect block. */
     uint32_t l0[INODE_L0_BLOCKS];           /* Direct block sectors. */
@@ -487,4 +491,26 @@ inode_length (const struct inode *inode)
   struct inode_disk in;
   cache_read(inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
   return in.length;
+}
+
+/* Gets the status attribute 'attribute' of the given inode. */
+bool 
+inode_get_attribute (struct inode *inode, uint32_t attribute)
+{
+  struct inode_disk inode_contents;
+  cache_read(inode->sector, &inode_contents, 0, BLOCK_SECTOR_SIZE);
+  return (inode_contents.status & attribute) != 0;
+}
+
+/* Sets the status attribute 'attribute' of the given inode to value on. */
+void 
+inode_set_attribute (struct inode *inode, uint32_t attribute, bool on)
+{
+  struct inode_disk inode_contents;
+  cache_read(inode->sector, &inode_contents, 0, BLOCK_SECTOR_SIZE);
+  if (on)
+    inode_contents.status |= attribute;
+  else
+    inode_contents.status &= ~attribute;
+  cache_write(inode->sector, &inode_contents, 0, BLOCK_SECTOR_SIZE);
 }
