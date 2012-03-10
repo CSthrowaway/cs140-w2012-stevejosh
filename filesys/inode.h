@@ -25,5 +25,6 @@ off_t inode_length (const struct inode *);
 
 bool inode_get_attribute (struct inode *, uint32_t attribute);
 void inode_set_attribute (struct inode *, uint32_t attribute, bool on);
+int inode_get_inum (struct inode *);
 
 #endif /* filesys/inode.h */
