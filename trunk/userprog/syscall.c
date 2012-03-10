@@ -738,27 +738,54 @@ syscall_mkdir (const char* dir UNUSED)
    and returns true, otherwise returns false. (..) and (.) are not
    returned. */
 static bool
-syscall_readdir (int fd UNUSED, char* name UNUSED)
+syscall_readdir (int fd, char* name)
 {
-  return false;
+  lock_filesys ();
+  struct file *handle = filesys_get_file (fd);
+  if (handle == NULL)
+    {
+      unlock_filesys ();
+      return false;
+    }
+  bool success = dir_readdir (handle, name);
+  unlock_filesys ();
+  return success;
 }
 
 /* -- System Call #18 --
    Returns true if fd represents a directory, false if it represents an
    ordinary file. */
 static bool
-syscall_isdir (int fd UNUSED)
+syscall_isdir (int fd)
 {
-  return false;
+  lock_filesys ();
+  struct file *handle = filesys_get_file (fd);
+  if (handle == NULL)
+    {
+      unlock_filesys ();
+      return false;
+    }
+  bool is_dir = file_is_directory (handle);
+  unlock_filesys ();
+  return is_dir;
 }
 
 /* -- System Call #19 --
    Returns the inode number of the inode associated with fd. The sector of
-   the inode is used as the inode number. */
+   the inode is used as the inode number. Returns -1 on error*/
 static int
-syscall_inumber (int fd UNUSED)
+syscall_inumber (int fd)
 {
-  return 2;
+  lock_filesys ();
+  struct file *handle = filesys_get_file (fd);
+  if (handle == NULL)
+    {
+      unlock_filesys ();
+      return -1;
+    }
+  int inum = file_get_inum (handle);
+  unlock_filesys ();
+  return inum;
 }
 
 

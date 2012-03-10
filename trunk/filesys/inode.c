@@ -19,8 +19,7 @@
 #define INODE_L2_BLOCKS     (INODE_L1_BLOCKS * INODE_L1_BLOCKS)
 #define INODE_L2_END        (INODE_L1_END + INODE_L2_BLOCKS)
 
-/* Below are the status bits for an inode. */
-#define INODE_DIR 0x1                   /* Set when inode is a directory. */
+
 /* In-memory inode. */
 struct inode
   {
@@ -513,4 +512,12 @@ inode_set_attribute (struct inode *inode, uint32_t attribute, bool on)
   else
     inode_contents.status &= ~attribute;
   cache_write(inode->sector, &inode_contents, 0, BLOCK_SECTOR_SIZE);
+}
+
+/* Returns the sector of the inode. */
+int 
+inode_get_inum (struct inode *inode)
+{
+  ASSERT (inode != NULL);
+  return inode->sector;
 }

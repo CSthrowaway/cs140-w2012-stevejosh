@@ -154,3 +154,19 @@ file_tell (struct file *file)
   ASSERT (file != NULL);
   return file->pos;
 }
+
+/* Returns true if the current file is a directory. */
+bool
+file_is_directory(struct file *file)
+{
+  ASSERT (file != NULL);
+  return inode_get_attribute (file->inode, INODE_DIR);
+}
+
+/* Returns true if the current file is a directory. */
+int
+file_get_inum(struct file *file)
+{
+  ASSERT (file != NULL);
+  return inode_get_inum (file->inode);
+}
