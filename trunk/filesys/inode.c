@@ -414,6 +414,11 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
   uint8_t *buffer = buffer_;
   off_t bytes_read = 0;
 
+  /* If they're trying to read past the end of the file, we automatically
+     fail to read anything. */
+  if (offset >= inode_length (inode))
+    return 0;
+
   while (size > 0) 
     {
       /* Disk sector to read, starting byte offset within sector. */
@@ -465,13 +470,16 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
     {
       locked = inode_lock (inode);
       grow_size = size - inode_left;
+      
+      /* If we failed to extend the inode, then we'll just say that this entire
+         operation failed. We've run out of disk space. */
       if (!inode_extend (inode, grow_size))
         {
           if (locked) inode_unlock (inode);
           return 0;
         }
     }
-    
+
   while (size > 0) 
     {
       /* Sector to write, starting byte offset within sector. */
@@ -538,6 +546,13 @@ inode_length (const struct inode *inode)
   struct inode_disk in;
   cache_read(inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
   return in.length;
+}
+
+/* Returns the number of outstanding references to the given inode. */
+int
+inode_get_open_count (const struct inode *inode)
+{
+  return inode->open_cnt;
 }
 
 /* Gets the status attribute 'attribute' of the given inode. */

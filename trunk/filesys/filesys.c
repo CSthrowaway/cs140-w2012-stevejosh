@@ -129,8 +129,7 @@ filesys_lookup_recursive (const char *path, block_sector_t sector)
 
       /* If the length of the path is zero, it means that we've found what we
          were looking for! */
-      if (len == 0)
-        return sector;
+      if (len == 0) return sector;
 
       /* Chop off leading forward slashes. */
       if (cpath[0] == '/')
@@ -156,7 +155,6 @@ filesys_lookup_recursive (const char *path, block_sector_t sector)
       file_unlock (dir);
       file_close (dir);
 
-  
       if (next_sector < 0)
         return -1;
       else
@@ -214,7 +212,29 @@ filesys_remove (const char *name)
   
   if (parent_sector < 0)
     return false;
-    
+
+  struct file *file = filesys_open (name);
+  if (file == NULL)
+    return false;
+  
+  if (file_is_dir (file))
+    {
+      /* If the dir's inode is open, we won't allow deletion of it. */
+      if (inode_get_open_count (file->inode) > 1)
+        {
+          file_close (file);
+          return false;
+        }
+      
+      /* If the dir is not empty, we won't allow deletion of it. */
+      if (!dir_is_empty (file))
+        {
+          file_close (file);
+          return false;
+        }
+    }
+  file_close (file);
+
   struct file *parent = file_open (inode_open (parent_sector));
   ASSERT (parent != NULL);
   
