@@ -52,13 +52,20 @@ file_get_inode (struct file *file)
   return file->inode;
 }
 
+/* Returns whether or not the given file is a directory. */
+bool
+file_is_dir (struct file *file)
+{
+  return inode_get_attribute (file->inode, INODE_DIR);
+}
+
 /* Reads SIZE bytes from FILE into BUFFER,
    starting at the file's current position.
    Returns the number of bytes actually read,
    which may be less than SIZE if end of file is reached.
    Advances FILE's position by the number of bytes read. */
 off_t
-file_read (struct file *file, void *buffer, off_t size) 
+file_read (struct file *file, void *buffer, off_t size)
 {
   off_t bytes_read = inode_read_at (file->inode, buffer, size, file->pos);
   file->pos += bytes_read;

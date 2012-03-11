@@ -55,7 +55,12 @@ static uint8_t syscall_arg_count[] =
   1,      /* Tell */
   1,      /* Close */
   2,      /* Mmap */
-  1       /* Munmap */
+  1,      /* Munmap */
+  1,      /* Chdir */
+  1,      /* Mkdir */
+  2,      /* Readdir */
+  1,      /* Isdir */
+  1,      /* Inumber */
 };
 
 /* An fd_elem encapsulates the information held by a file descriptor.
@@ -365,10 +370,10 @@ is_valid_filename (const char* file)
   /* If the user process gives us a bad pointer, kill it. */
   if (file == NULL)
     syscall_exit (-1);
-  name_size = validate_str (file, NAME_MAX);
+  name_size = validate_str (file, FILE_PATH_MAX);
   if (name_size == -1)
     syscall_exit(-1);
-  return name_size <= NAME_MAX;
+  return name_size <= FILE_PATH_MAX;
 }
 
 /* -- System Call #2 --
@@ -405,6 +410,7 @@ syscall_wait (pid_t pid)
 static bool
 syscall_create (const char *file, unsigned initial_size)
 {
+  // TODO : Make sure they can't create files with names longer than NAME_MAX!
   if (!is_valid_filename (file))
     return false;
 
@@ -421,26 +427,27 @@ syscall_create (const char *file, unsigned initial_size)
    still be read and write from, but it no longer has a name and no one
    else can open it. */
 static bool
-syscall_remove (const char *file)
+syscall_remove (const char *path)
 {
-  if (!is_valid_filename (file))
+  if (!is_valid_filename (path))
     return false;
 
-  struct inode* inode;
   lock_filesys ();
-
-  bool success;
+  bool success = false;
 
   /* Make sure the file exists. */
-  if (dir_lookup (dir_open_root (), file, &inode))
+  struct file *file = filesys_open (path);
+  if (file)
     {
-      filesys_remove (file);
-      success = true;
+      /* Make sure the file isn't a directory. */
+      if (!file_is_dir (file))
+        {
+          filesys_remove (path);
+          success = true;
+        }
+      file_close (file);
     }
-  else
-      success = false;
-
-  inode_close (inode);
+  
   unlock_filesys ();
   return success;
 }
@@ -517,7 +524,7 @@ fd_read (int fd, void *buffer, unsigned size)
 {
   lock_filesys ();
   struct file *handle = filesys_get_file (fd);
-  if (handle == NULL)
+  if (handle == NULL || file_is_dir (handle))
     {
       unlock_filesys ();
       return -1;
@@ -571,7 +578,7 @@ fd_write (int fd, const void *buffer, unsigned size)
 {
   lock_filesys ();
   struct file *handle = filesys_get_file (fd);
-  if (handle == NULL)
+  if (handle == NULL || file_is_dir (handle))
     {
       unlock_filesys ();
       return -1;
@@ -633,7 +640,7 @@ fd_seek (int fd, unsigned position)
 {
   lock_filesys ();
   struct file *handle = filesys_get_file (fd);
-  if (handle == NULL)
+  if (handle == NULL || file_is_dir (handle))
     {
       unlock_filesys ();
       return;
@@ -659,9 +666,9 @@ syscall_tell (int fd)
 {
   lock_filesys ();
   struct file *handle = filesys_get_file (fd);
-  unsigned tellVal = file_tell (handle);
+  unsigned cursor = file_tell (handle);
   unlock_filesys ();
-  return tellVal;
+  return cursor;
 }
 
 /* -- System Call #12 --
@@ -717,8 +724,22 @@ syscall_munmap (mapid_t mapid UNUSED)
 /* -- System Call #15 --
    Changes the current working directory of the process to dir. */
 static bool
-syscall_chdir (const char *dir UNUSED)
+syscall_chdir (const char *path)
 {
+  if (!is_valid_filename (path))
+    return false;
+
+  struct file *dir = filesys_open (path);
+  if (dir == NULL)
+    return false;
+  if (!file_is_dir (dir))
+    {
+      file_close (dir);
+      return false;
+    }
+
+  thread_current ()->cwd = inode_get_inumber (dir->inode);
+  file_close (dir);
   return true;
 }
 
@@ -727,9 +748,13 @@ syscall_chdir (const char *dir UNUSED)
    failure. Fails if dir already exists or if any directory named in dir
    (besides the last) does not already exist. */
 static bool
-syscall_mkdir (const char* dir UNUSED)
+syscall_mkdir (const char* path)
 {
-  return true;
+  // TODO : Make sure they can't make dir names longer than NAME_MAX!
+  if (!is_valid_filename (path))
+    return false;
+
+  return filesys_create_dir (path);
 }
 
 /* -- System Call #17 --
@@ -740,16 +765,18 @@ syscall_mkdir (const char* dir UNUSED)
 static bool
 syscall_readdir (int fd, char* name)
 {
+  if (!is_valid_filename (name))
+    return false;
+  if (validate_buffer (name, NAME_MAX) == NULL)
+    syscall_exit (-1);
+  
   lock_filesys ();
   struct file *handle = filesys_get_file (fd);
-  if (handle == NULL)
-    {
-      unlock_filesys ();
-      return false;
-    }
-  bool success = dir_readdir (handle, name);
   unlock_filesys ();
-  return success;
+  if (handle == NULL || !file_is_dir (handle))
+    return false;
+
+  return dir_readdir (handle, name);
 }
 
 /* -- System Call #18 --
@@ -759,15 +786,11 @@ static bool
 syscall_isdir (int fd)
 {
   lock_filesys ();
-  struct file *handle = filesys_get_file (fd);
-  if (handle == NULL)
-    {
-      unlock_filesys ();
-      return false;
-    }
-  bool is_dir = file_is_directory (handle);
+  struct file *file = filesys_get_file (fd);
   unlock_filesys ();
-  return is_dir;
+  if (file == NULL)
+    return -1;
+  return file_is_dir (file);
 }
 
 /* -- System Call #19 --
@@ -777,15 +800,11 @@ static int
 syscall_inumber (int fd)
 {
   lock_filesys ();
-  struct file *handle = filesys_get_file (fd);
-  if (handle == NULL)
-    {
-      unlock_filesys ();
-      return -1;
-    }
-  int inum = file_get_inum (handle);
+  struct file *file = filesys_get_file (fd);
   unlock_filesys ();
-  return inum;
+  if (file == NULL)
+    return -1;
+  return inode_get_inumber (file->inode);
 }
 
 

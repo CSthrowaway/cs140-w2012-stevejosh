@@ -6,6 +6,7 @@
 #include "filesys/free-map.h"
 #include "filesys/inode.h"
 #include "filesys/directory.h"
+#include "threads/thread.h"
 
 /* Partition that contains the file system. */
 struct block *fs_device;
@@ -37,7 +38,61 @@ filesys_done (void)
 {
   free_map_close ();
 }
-
+
+static bool
+filesys_do_create (const char *name, off_t initial_size, bool is_dir)
+{
+  block_sector_t inode_sector = 0;
+  if (!free_map_allocate (1, &inode_sector))
+    return false;
+
+  const char *last_slash = strrchr (name, '/');
+  char name_short[NAME_MAX + 1];
+  int parent_sector;
+
+  if (last_slash == NULL)
+    {
+      parent_sector = thread_current ()->cwd;
+      strlcpy (name_short, name, NAME_MAX + 1);
+    }
+  else
+    {
+      char partial_path[FILE_PATH_MAX + 1];
+      strlcpy (partial_path, name, last_slash - name + 2);
+      strlcpy (name_short, last_slash + 1, NAME_MAX);
+      //printf ("Partial path for <%s> is <%s>\n", name, partial_path);
+      parent_sector = filesys_lookup (partial_path);
+    }
+
+  //printf ("<%s> (%s) will be created in directory %d.\n", name, name_short, parent_sector);
+
+  uint32_t inode_flags = is_dir ? INODE_DIR : 0;
+  if (!(inode_create (inode_sector, initial_size, inode_flags)))
+    goto failed;
+    
+  struct file *parent = file_open (inode_open (parent_sector));
+  if (!dir_add (parent, name_short, inode_sector))
+    {
+      file_close (parent);
+      goto failed;
+    }
+
+  file_close (parent);
+
+  if (is_dir)
+    {
+      struct file *self = file_open (inode_open (inode_sector));
+      dir_add (self, ".", inode_sector);
+      dir_add (self, "..", parent_sector);
+      file_close (self);
+    }
+  return true;
+
+failed:
+  free_map_release (inode_sector, 1);
+  return false;
+}
+
 /* Creates a file named NAME with the given INITIAL_SIZE.
    Returns true if successful, false otherwise.
    Fails if a file named NAME already exists,
@@ -45,17 +100,81 @@ filesys_done (void)
 bool
 filesys_create (const char *name, off_t initial_size) 
 {
-  block_sector_t inode_sector = 0;
-  struct file *dir = dir_open_root ();
-  bool success = (dir != NULL
-                  && free_map_allocate (1, &inode_sector)
-                  && inode_create (inode_sector, initial_size)
-                  && dir_add (dir, name, inode_sector));
-  if (!success && inode_sector != 0) 
-    free_map_release (inode_sector, 1);
-  dir_close (dir);
+  return filesys_do_create (name, initial_size, false);
+}
 
-  return success;
+bool
+filesys_create_dir (const char *name)
+{
+  return filesys_do_create (name, 0, true);
+}
+
+static int
+filesys_lookup_recursive (const char *path, block_sector_t sector)
+{
+  size_t len = strlen (path);
+  char buf [len + 1];
+  char *cpath = buf;
+  strlcpy (buf, path, len + 1);
+
+  while (true)
+    {
+      //printf ("\tlooking for <%s> in sector %d...\n", cpath, sector);
+      len = strlen (cpath);      
+
+      /* If the length of the path is zero, it means that we've found what we
+         were looking for! */
+      if (len == 0)
+        return sector;
+
+      /* Chop off leading forward slashes. */
+      if (cpath[0] == '/')
+        {
+          cpath++;
+          continue;
+        }
+      
+      /* Chop off trailing forward slashes. */
+      if (cpath[len - 1] == '/')
+        {
+          cpath[len - 1] = '\0';
+          continue;
+        }
+
+      size_t next_slash = strcspn (cpath, "/");
+      char lookup_buf [next_slash + 1];
+      strlcpy (lookup_buf, cpath, next_slash + 1);
+      
+      struct file *dir = file_open (inode_open (sector));
+      int next_sector = dir_lookup (dir, lookup_buf);
+      file_close (dir);
+
+  
+      if (next_sector < 0)
+        return -1;
+      else
+        {
+          cpath += next_slash;
+          sector = next_sector;
+          continue;
+        }
+    }
+}
+
+int
+filesys_lookup (const char *name)
+{
+  int len = strlen (name);
+  if (len == 0)
+    return -1;
+  //printf ("Looking up file <%s>.\n", name);
+  int sector;
+  if (name[0] == '/')
+    sector = filesys_lookup_recursive (name, ROOT_DIR_SECTOR);
+  else
+    sector = filesys_lookup_recursive (name, thread_current ()->cwd);
+  //printf ("Result: sector %d.\n", sector);
+  return sector;
 }
 
 /* Opens the file with the given NAME.
@@ -66,14 +185,11 @@ filesys_create (const char *name, off_t initial_size)
 struct file *
 filesys_open (const char *name)
 {
-  struct file *dir = dir_open_root ();
-  struct inode *inode = NULL;
-
-  if (dir != NULL)
-    dir_lookup (dir, name, &inode);
-  dir_close (dir);
-
-  return file_open (inode);
+  int sector = filesys_lookup (name);
+  if (sector < 0)
+    return NULL;
+  else
+    return file_open (inode_open (sector));
 }
 
 /* Deletes the file named NAME.
@@ -85,7 +201,7 @@ filesys_remove (const char *name)
 {
   struct file *dir = dir_open_root ();
   bool success = dir != NULL && dir_remove (dir, name);
-  dir_close (dir); 
+  file_close (dir); 
 
   return success;
 }
@@ -96,8 +212,15 @@ do_format (void)
 {
   printf ("Formatting file system...");
   free_map_create ();
-  if (!dir_create (ROOT_DIR_SECTOR, 16))
+  struct file *root;
+  
+  if (!dir_create (ROOT_DIR_SECTOR, 0) ||
+      !(root = file_open (inode_open (ROOT_DIR_SECTOR))) ||
+      !dir_add (root, ".", ROOT_DIR_SECTOR) ||
+      !dir_add (root, "..", ROOT_DIR_SECTOR))
     PANIC ("root directory creation failed");
+
+  file_close (root);
   free_map_close ();
   printf ("done.\n");
 }

@@ -20,6 +20,7 @@
 #define INODE_L2_END        (INODE_L1_END + INODE_L2_BLOCKS)
 
 
+
 /* In-memory inode. */
 struct inode
   {
@@ -27,8 +28,7 @@ struct inode
     block_sector_t sector;              /* Sector number of disk location. */
     int open_cnt;                       /* Number of openers. */
     bool removed;                       /* True if deleted, false otherwise. */
-    int deny_write_cnt;                 /* 0: writes ok, >0: deny
-					   writes. */
+    int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
     struct lock lock;
   };
 
@@ -39,8 +39,7 @@ struct inode_disk
     off_t length;                           /* File size in bytes. */
     unsigned magic;                         /* Magic number. */
     uint32_t blocks;                        /* Number of allocated blocks. */
-    uint32_t status;                        /* Status bits including
-					       whether file or directory. */
+    uint32_t status;                        /* Status bits. */
     uint32_t l2;                            /* Sector of doubly indirect block. */
     uint32_t l1;                            /* Sector of indirect block. */
     uint32_t l0[INODE_L0_BLOCKS];           /* Direct block sectors. */
@@ -241,7 +240,7 @@ inode_extend (struct inode *inode, unsigned size)
    Returns false if memory or disk allocation fails. */
 
 bool
-inode_create (block_sector_t sector, off_t length)
+inode_create (block_sector_t sector, off_t length, uint32_t status)
 {
   struct inode_disk *disk_inode = NULL;
   bool success = false;
@@ -258,6 +257,7 @@ inode_create (block_sector_t sector, off_t length)
       size_t sectors = bytes_to_sectors (length);
       disk_inode->length = length;
       disk_inode->magic = INODE_MAGIC;
+      disk_inode->status = status;
       if (sectors > 0)
 	      {
 	        size_t i;
@@ -496,22 +496,20 @@ inode_length (const struct inode *inode)
 bool 
 inode_get_attribute (struct inode *inode, uint32_t attribute)
 {
-  struct inode_disk inode_contents;
-  cache_read(inode->sector, &inode_contents, 0, BLOCK_SECTOR_SIZE);
-  return (inode_contents.status & attribute) != 0;
+  struct inode_disk in;
+  cache_read(inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
+  return (in.status & attribute) != 0;
 }
 
 /* Sets the status attribute 'attribute' of the given inode to value on. */
-void 
+void
 inode_set_attribute (struct inode *inode, uint32_t attribute, bool on)
 {
-  struct inode_disk inode_contents;
-  cache_read(inode->sector, &inode_contents, 0, BLOCK_SECTOR_SIZE);
-  if (on)
-    inode_contents.status |= attribute;
-  else
-    inode_contents.status &= ~attribute;
-  cache_write(inode->sector, &inode_contents, 0, BLOCK_SECTOR_SIZE);
+  struct inode_disk in;
+  cache_read(inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
+  if (on) in.status |= attribute;
+  else    in.status &= ~attribute;
+  cache_write(inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
 }
 
 /* Returns the sector of the inode. */
