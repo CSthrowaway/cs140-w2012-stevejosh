@@ -34,9 +34,29 @@ filesys_init (bool format)
 /* Shuts down the file system module, writing any unwritten data
    to disk. */
 void
-filesys_done (void) 
+filesys_done (void)
 {
   free_map_close ();
+}
+
+/* Splits the given path into the parent directory and the file name. Returns
+   the sector of the parent directory and stores the file name in "element". */
+static int
+filesys_split_path (const char *path, char *element)
+{
+  const char *last_slash = strrchr (path, '/');
+  if (last_slash == NULL)
+    {
+      strlcpy (element, path, NAME_MAX + 1);
+      return thread_current ()->cwd;
+    }
+  else
+    {
+      char partial_path[FILE_PATH_MAX + 1];
+      strlcpy (partial_path, path, last_slash - path + 2);
+      strlcpy (element, last_slash + 1, NAME_MAX);
+      return filesys_lookup (partial_path);
+    }
 }
 
 static bool
@@ -46,23 +66,8 @@ filesys_do_create (const char *name, off_t initial_size, bool is_dir)
   if (!free_map_allocate (1, &inode_sector))
     return false;
 
-  const char *last_slash = strrchr (name, '/');
   char name_short[NAME_MAX + 1];
-  int parent_sector;
-
-  if (last_slash == NULL)
-    {
-      parent_sector = thread_current ()->cwd;
-      strlcpy (name_short, name, NAME_MAX + 1);
-    }
-  else
-    {
-      char partial_path[FILE_PATH_MAX + 1];
-      strlcpy (partial_path, name, last_slash - name + 2);
-      strlcpy (name_short, last_slash + 1, NAME_MAX);
-      //printf ("Partial path for <%s> is <%s>\n", name, partial_path);
-      parent_sector = filesys_lookup (partial_path);
-    }
+  int parent_sector = filesys_split_path (name, name_short);
 
   //printf ("<%s> (%s) will be created in directory %d.\n", name, name_short, parent_sector);
 
@@ -146,7 +151,9 @@ filesys_lookup_recursive (const char *path, block_sector_t sector)
       strlcpy (lookup_buf, cpath, next_slash + 1);
       
       struct file *dir = file_open (inode_open (sector));
+      file_lock (dir);
       int next_sector = dir_lookup (dir, lookup_buf);
+      file_unlock (dir);
       file_close (dir);
 
   
@@ -199,10 +206,21 @@ filesys_open (const char *name)
 bool
 filesys_remove (const char *name) 
 {
-  struct file *dir = dir_open_root ();
-  bool success = dir != NULL && dir_remove (dir, name);
-  file_close (dir); 
-
+  // TODO : Don't allow removal of non-empty dirs
+  //printf ("Removing <%s>...\n", name);
+  char name_short[NAME_MAX + 1];
+  int parent_sector = filesys_split_path (name, name_short);
+  
+  if (parent_sector < 0)
+    return false;
+    
+  struct file *parent = file_open (inode_open (parent_sector));
+  ASSERT (parent != NULL);
+  
+  bool success = false;
+  if (dir_remove (parent, name_short))
+    success = true;
+  file_close (parent);
   return success;
 }
 

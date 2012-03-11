@@ -23,6 +23,9 @@ void inode_deny_write (struct inode *);
 void inode_allow_write (struct inode *);
 off_t inode_length (const struct inode *);
 
+bool inode_lock (struct inode *inode);
+void inode_unlock (struct inode *inode);
+
 bool inode_get_attribute (struct inode *, uint32_t attribute);
 void inode_set_attribute (struct inode *, uint32_t attribute, bool on);
 int inode_get_inum (struct inode *);

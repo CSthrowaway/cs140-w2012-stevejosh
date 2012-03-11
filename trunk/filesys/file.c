@@ -45,6 +45,20 @@ file_close (struct file *file)
     }
 }
 
+/* Acquires a lock on the given file's inode. */
+void
+file_lock (struct file *file)
+{
+  inode_lock (file->inode);
+}
+
+/* Releases a lock on the given file's inode. */
+void
+file_unlock (struct file *file)
+{
+  inode_unlock (file->inode);
+}
+
 /* Returns the inode encapsulated by FILE. */
 struct inode *
 file_get_inode (struct file *file) 
