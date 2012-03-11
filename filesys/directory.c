@@ -58,6 +58,7 @@ dir_get_inode (struct file *dir)
 bool
 dir_readdir (struct file *dir, char *buf)
 {
+  file_lock (dir);
   /* If the cursor is before the third entry, then it's pointing at "." or "..",
      since there are *always* the first two directory entries. Seek to beyond
      them, since we don't want to return them. */
@@ -65,20 +66,26 @@ dir_readdir (struct file *dir, char *buf)
   if (file_tell (dir) < min_cursor)
     file_seek (dir, min_cursor);
 
-  // TODO : Synch
+  bool success = false;
   while (true)
     {
       struct dir_entry e;
       if (file_read (dir, &e, sizeof e) != sizeof e)
-        return false;
+        goto done;
       if (e.in_use)
         {
           strlcpy (buf, e.name, NAME_MAX + 1);
           return true;
+          goto done;
         }
     }
+    
+done:
+  file_unlock (dir);
+  return success;
 }
 
+/* NOTE - Assumes that the caller has already acquired a lock on dir. */
 static int
 lookup (struct file *dir, const char *name, off_t *out_ofs,
         struct dir_entry *out_entry)
@@ -90,7 +97,6 @@ lookup (struct file *dir, const char *name, off_t *out_ofs,
   
   int return_value = -1;
 
-  // TODO lock?
   size_t dir_size = inode_length (dir->inode);
   //printf ("Scanning dir %d (%d entries) for %s.\n", inode_get_inumber (dir->inode), dir_size / sizeof(e), name);
   for (ofs = 0; ofs < dir_size; ofs += sizeof e) 
@@ -134,6 +140,7 @@ dir_add (struct file *dir, const char *name, block_sector_t inode_sector)
   if (*name == '\0' || strlen (name) > NAME_MAX)
     return false;
 
+  file_lock (dir);
   /* Check that NAME is not in use. */
   if (dir_lookup (dir, name) >= 0)
     goto done;
@@ -161,6 +168,7 @@ dir_add (struct file *dir, const char *name, block_sector_t inode_sector)
   success = inode_write_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
 
  done:
+  file_unlock (dir);
   return success;
 }
 
@@ -174,13 +182,14 @@ dir_remove (struct file *dir, const char *name)
   struct inode *inode = NULL;
   bool success = false;
   off_t ofs;
-  block_sector_t sector;
+  int sector;
 
   ASSERT (dir != NULL);
   ASSERT (name != NULL);
 
+  file_lock (dir);
   /* Find directory entry. */
-  if (!(sector = lookup (dir, name, &ofs, &e)))
+  if ((sector = lookup (dir, name, &ofs, &e)) < 0)
     goto done;
 
   /* Open inode. */
@@ -198,6 +207,7 @@ dir_remove (struct file *dir, const char *name)
   success = true;
 
  done:
-  inode_close (inode);
+  file_unlock (dir);
+  if (inode) inode_close (inode);
   return success;
 }

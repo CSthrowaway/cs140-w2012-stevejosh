@@ -153,33 +153,63 @@ inode_init (void)
 }
 
 /* Allocate a new block, zero the contents, and return the sector number. */
-static block_sector_t
+static int
 allocate_zeroed_block (void)
 {
   block_sector_t block;
-  free_map_allocate (1, &block);
+  if (!free_map_allocate (1, &block))
+    return -1;
   cache_zero (block);
   return block;
 }
 
-static void
+/* Acquires a lock on the given inode. Returns false if the lock is already
+   owned by the calling thread. */
+bool
+inode_lock (struct inode *inode)
+{
+  if (lock_held_by_current_thread (&inode->lock))
+    return false;
+  lock_acquire (&inode->lock);
+  return true;
+}
+
+/* Releases the given inode's lock. */
+void
+inode_unlock (struct inode *inode)
+{
+  lock_release (&inode->lock);
+}
+
+static bool
 inode_extend_block (struct inode_disk *inode)
 {
   uint32_t blocks = inode->blocks;
   ASSERT (blocks < INODE_L2_END);
+  int new_sector;
 
   if (blocks == INODE_L0_BLOCKS)
-    inode->l1 = allocate_zeroed_block ();
+    {
+      if ((new_sector = allocate_zeroed_block ()) < 0) return false;
+      inode->l1 = new_sector;
+    }
   if (blocks == INODE_L1_END)
-    inode->l2 = allocate_zeroed_block ();
-  
+    {
+      if ((new_sector = allocate_zeroed_block ()) < 0) return false;
+      inode->l2 = new_sector;
+    }
+
   if (blocks < INODE_L0_BLOCKS)
-    inode->l0[blocks] = allocate_zeroed_block ();
+    {
+      if ((new_sector = allocate_zeroed_block ()) < 0) return false;
+      inode->l0[blocks] = new_sector;
+    }
   else if (blocks < INODE_L1_END)
     {
       struct inode_disk_indirect ind;
       cache_read (inode->l1, &ind, 0, BLOCK_SECTOR_SIZE);
-      ind.block[blocks - INODE_L0_BLOCKS] = allocate_zeroed_block ();
+      if ((new_sector = allocate_zeroed_block ()) < 0) return false;
+      ind.block[blocks - INODE_L0_BLOCKS] = new_sector;
       cache_write (inode->l1, &ind, 0, BLOCK_SECTOR_SIZE); 
     }
   else
@@ -194,7 +224,8 @@ inode_extend_block (struct inode_disk *inode)
          a block for the L1 entry. */
       if (offset == 0)
         {
-          ind.block[index] = allocate_zeroed_block ();
+          if ((new_sector = allocate_zeroed_block ()) < 0) return false;
+          ind.block[index] = new_sector;
           cache_write (inode->l2, &ind, 0, BLOCK_SECTOR_SIZE);
         }
 
@@ -203,11 +234,13 @@ inode_extend_block (struct inode_disk *inode)
          kernel stack to grow too large. */
       int indirect_block = ind.block[index];
       cache_read (indirect_block, &ind, 0, BLOCK_SECTOR_SIZE);
-      ind.block[offset] = allocate_zeroed_block ();
+      if ((new_sector = allocate_zeroed_block ()) < 0) return false;
+      ind.block[offset] = new_sector;
       cache_write (indirect_block, &ind, 0, BLOCK_SECTOR_SIZE);
     }
 
   inode->blocks++;
+  return true;
 }
 
 /* Allocates enough disk sectors for the given inode to be able to hold size
@@ -215,7 +248,7 @@ inode_extend_block (struct inode_disk *inode)
    synchronization purposes.
    NOTE : Assumes that the caller has already acquired a lock on the given
           inode. */
-static void
+static bool
 inode_extend (struct inode *inode, unsigned size)
 {
   struct inode_disk in;
@@ -224,13 +257,17 @@ inode_extend (struct inode *inode, unsigned size)
   int original_length = in.length;
   in.length += size;
   while ((off_t)(in.blocks * BLOCK_SECTOR_SIZE) < in.length)
-    inode_extend_block (&in);
+    {
+      if (!inode_extend_block (&in))
+        return false;
+    }
 
   /* Set the length back to what it was, we don't want to tamper with the
      inode's length field. */
   in.length = original_length;
 
   cache_write (inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
+  return true;
 }
 
 /* Initializes an inode with LENGTH bytes of data and
@@ -258,14 +295,20 @@ inode_create (block_sector_t sector, off_t length, uint32_t status)
       disk_inode->length = length;
       disk_inode->magic = INODE_MAGIC;
       disk_inode->status = status;
+      success = true;
       if (sectors > 0)
 	      {
 	        size_t i;
-	        for (i = 0; i < sectors; i++) 
-            inode_extend_block (disk_inode);
+	        for (i = 0; i < sectors; i++)
+	          {
+              if (!inode_extend_block (disk_inode))
+                {
+                  success = false;
+                  break;
+                }
+            }
 	      }
 	    cache_write (sector, disk_inode, 0, BLOCK_SECTOR_SIZE);
-      success = true;
     }
   free (disk_inode);
   return success;
@@ -413,15 +456,20 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 
   off_t inode_left = inode_length (inode) - offset;
   off_t grow_size = 0;
+  bool locked = false;
   
   /* If we don't have enough space left to perform this write, then we need to
      lock the inode and extend it to make room. Note that we do NOT change the
      inode's length field until AFTER we have finished our write. */
   if (inode_left < size)
     {
-      lock_acquire (&inode->lock);
+      locked = inode_lock (inode);
       grow_size = size - inode_left;
-      inode_extend (inode, grow_size);
+      if (!inode_extend (inode, grow_size))
+        {
+          if (locked) inode_unlock (inode);
+          return 0;
+        }
     }
     
   while (size > 0) 
@@ -456,7 +504,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       cache_read (inode->sector, in, 0, BLOCK_SECTOR_SIZE);
       in->length += grow_size;
       cache_write (inode->sector, in, 0, BLOCK_SECTOR_SIZE);
-      lock_release (&inode->lock);
+      if (locked) inode_unlock (inode);
       free (in);
     }
 

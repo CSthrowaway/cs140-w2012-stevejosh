@@ -439,12 +439,7 @@ syscall_remove (const char *path)
   struct file *file = filesys_open (path);
   if (file)
     {
-      /* Make sure the file isn't a directory. */
-      if (!file_is_dir (file))
-        {
-          filesys_remove (path);
-          success = true;
-        }
+      success = filesys_remove (path);
       file_close (file);
     }
   
@@ -699,7 +694,6 @@ syscall_mmap (int fd UNUSED, void *vaddr UNUSED)
   if (!process_create_mmap_pages (id, vaddr))
     {
       process_remove_mmap (id);
-      // TODO : Remove the mmap from the process mmap table
       return -1;
     }
   return id;
