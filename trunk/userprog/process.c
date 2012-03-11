@@ -780,8 +780,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
   /* Open executable file. */
   file = filesys_open (file_name);
 
-  if (file == NULL) 
+  if (file == NULL || file_is_dir (file)) 
     {
+      if (file) file_close (file);
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
