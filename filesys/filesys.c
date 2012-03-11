@@ -207,6 +207,7 @@ bool
 filesys_remove (const char *name) 
 {
   // TODO : Don't allow removal of non-empty dirs
+  // TODO : Don't allow removal of working dir
   //printf ("Removing <%s>...\n", name);
   char name_short[NAME_MAX + 1];
   int parent_sector = filesys_split_path (name, name_short);
