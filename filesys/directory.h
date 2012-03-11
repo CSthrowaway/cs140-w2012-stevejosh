@@ -19,6 +19,7 @@ struct inode;
 bool dir_create (block_sector_t sector, size_t entry_cnt);
 struct file *dir_open_root (void);
 struct inode *dir_get_inode (struct file *);
+bool dir_is_empty (struct file *dir);
 
 /* Reading and writing. */
 int dir_lookup (struct file *dir, const char *name);

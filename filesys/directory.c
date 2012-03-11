@@ -48,16 +48,45 @@ dir_open_root (void)
 struct inode *
 dir_get_inode (struct file *dir) 
 {
+  ASSERT (file_is_dir (dir));
   return dir->inode;
+}
+
+/* Returns whether or not the given directory is empty (an empty directory is
+   one in which the only entries are "." and "..").
+   NOTE : Assumes the caller has already acquired a lock on the directory. */
+bool
+dir_is_empty (struct file *dir)
+{
+  ASSERT (file_is_dir (dir));
+  
+  /* Look through all the directory entries, counting up the entries that are
+     in use. */
+  size_t dir_size = inode_length (dir->inode);
+  struct dir_entry e;
+  size_t ofs;
+  size_t entries = 0;
+  for (ofs = 0; ofs < dir_size; ofs += sizeof e) 
+    {
+      inode_read_at (dir->inode, &e, sizeof e, ofs);
+      if (e.in_use) entries++;
+    }
+
+  /* A directory should never have less than 2 entries. */
+  ASSERT (entries >= 2);
+  
+  /* The directory is empty if it contains only "." and ".." - 2 entries. */
+  return entries == 2;
 }
 
 /* Finds the next element of the given directory and stores the element's name
    in the given buffer. Returns true if an element was found, false if not.
-   Note that "." and ".." are not considered true elements, and will never be
+   NOTE : "." and ".." are not considered true elements, and will never be
    returned by this function. */
 bool
 dir_readdir (struct file *dir, char *buf)
 {
+  ASSERT (file_is_dir (dir));
   file_lock (dir);
   /* If the cursor is before the third entry, then it's pointing at "." or "..",
      since there are *always* the first two directory entries. Seek to beyond
@@ -90,6 +119,7 @@ static int
 lookup (struct file *dir, const char *name, off_t *out_ofs,
         struct dir_entry *out_entry)
 {
+  ASSERT (file_is_dir (dir));
   struct dir_entry e;
   size_t ofs;
   
@@ -117,6 +147,7 @@ lookup (struct file *dir, const char *name, off_t *out_ofs,
 int
 dir_lookup (struct file *dir, const char *name)
 {
+  ASSERT (file_is_dir (dir));
   return lookup (dir, name, NULL, NULL);
 }
 
@@ -129,6 +160,7 @@ dir_lookup (struct file *dir, const char *name)
 bool
 dir_add (struct file *dir, const char *name, block_sector_t inode_sector)
 {
+  ASSERT (file_is_dir (dir));
   struct dir_entry e;
   size_t ofs;
   bool success = false;
@@ -178,6 +210,7 @@ dir_add (struct file *dir, const char *name, block_sector_t inode_sector)
 bool
 dir_remove (struct file *dir, const char *name) 
 {
+  ASSERT (file_is_dir (dir));
   struct dir_entry e;
   struct inode *inode = NULL;
   bool success = false;
