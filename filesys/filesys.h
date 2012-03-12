@@ -12,6 +12,7 @@
 struct block *fs_device;
 
 void filesys_init (bool format);
+bool filesys_initialized (void);
 void filesys_done (void);
 bool filesys_create (const char *name, off_t initial_size);
 bool filesys_create_dir (const char *name);

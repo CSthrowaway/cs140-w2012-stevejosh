@@ -18,6 +18,8 @@
 #include "userprog/process.h"
 #endif
 #ifdef FILESYS
+#include "filesys/inode.h"
+#include "filesys/file.h"
 #include "filesys/filesys.h"
 #endif
 /* Random value for struct thread's `magic' member.
@@ -412,6 +414,11 @@ thread_exit (void)
   process_exit ();
 #endif
 
+#ifdef FILESYS
+  if (thread_current ()->cwd_file)
+    file_close (thread_current ()->cwd_file);
+#endif
+
   /* Remove thread from all threads list, set our status to dying,
      and schedule another process.  That process will destroy us
      when it calls thread_schedule_tail(). */
@@ -733,7 +740,9 @@ init_thread (struct thread *t, const char *name, int priority)
   list_init (&t->mmap_table);
 #endif
 #ifdef FILESYS
-  t->cwd = t->parent->cwd;  
+  t->cwd = t->parent->cwd;
+  if (filesys_initialized ())
+    t->cwd_file = file_open (inode_open (t->cwd));
 #endif
   list_push_back (&all_list, &t->allelem);
 }

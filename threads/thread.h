@@ -173,6 +173,8 @@ struct thread
 
 #ifdef FILESYS
     block_sector_t cwd;                 /* Sector of working dir. */
+    struct file *cwd_file;              /* Opened working dir file. Used to
+                                           prevent deletion of cwd. */
 #endif
 
     /* Owned by thread.c. */
