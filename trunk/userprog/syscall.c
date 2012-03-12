@@ -155,7 +155,9 @@ static void
 filesys_free_fdelem (struct fd_elem *elem)
 {
   file_close (elem->file);
+  lock_filesys ();
   hash_delete (&filesys_fdhash, &elem->h_elem);
+  unlock_filesys ();
   list_remove (&elem->l_elem);
   free (elem);
 }
@@ -165,14 +167,15 @@ filesys_free_fdelem (struct fd_elem *elem)
 static struct file*
 filesys_get_file (int fd)
 {
+  lock_filesys ();
   struct fd_elem *found = filesys_get_fdelem (fd);
+  unlock_filesys ();
   return found != NULL ? found->file : NULL;
 }
 
 void
 filesys_free_open_files (struct thread *t)
 {
-  lock_filesys ();
   struct list_elem *e;
   for (e = list_begin (&t->open_files); e != list_end (&t->open_files);)
     {
@@ -183,8 +186,6 @@ filesys_free_open_files (struct thread *t)
       filesys_free_fdelem (fd_elem);
       e = next;
     }
-
-  unlock_filesys ();
 }
 
 /* Return an integer >= 2 that is unique for the life of the kernel.
@@ -414,9 +415,7 @@ syscall_create (const char *file, unsigned initial_size)
   if (!is_valid_filename (file))
     return false;
 
-  lock_filesys ();
   bool success = filesys_create (file, initial_size);
-  unlock_filesys ();
   return success;
 }
 
@@ -432,7 +431,6 @@ syscall_remove (const char *path)
   if (!is_valid_filename (path))
     return false;
 
-  lock_filesys ();
   bool success = false;
 
   /* Make sure the file exists. */
@@ -445,21 +443,16 @@ syscall_remove (const char *path)
       success = filesys_remove (path);
     }
   
-  unlock_filesys ();
   return success;
 }
 
 int
 fd_open (const char *file)
 {
-  lock_filesys ();
   struct file* handle = filesys_open (file);
   
   if (handle == NULL)
-    {
-      unlock_filesys ();
-      return -1;
-    }
+    return -1;
 
   struct fd_elem *newhash = malloc (sizeof(struct fd_elem));
 
@@ -467,7 +460,6 @@ fd_open (const char *file)
   if (newhash == NULL)
     {
       file_close (handle);
-      unlock_filesys ();
       return -1;
     }
 
@@ -476,10 +468,12 @@ fd_open (const char *file)
   newhash->fd = allocate_fd ();
   newhash->file = handle;
   newhash->owner_pid = thread_current ()->tid;
-  hash_insert (&filesys_fdhash, &newhash->h_elem);
-  list_push_back (&thread_current ()->open_files, &newhash->l_elem);
 
+  lock_filesys ();
+  hash_insert (&filesys_fdhash, &newhash->h_elem);
   unlock_filesys ();
+
+  list_push_back (&thread_current ()->open_files, &newhash->l_elem);
   return newhash->fd;
 }
 
@@ -498,10 +492,8 @@ syscall_open (const char *file)
 
 int fd_filesize (int fd)
 {
-  lock_filesys ();
   struct file *handle = filesys_get_file (fd);
   int return_value = (handle == NULL) ? -1 : file_length (handle);
-  unlock_filesys ();
   return return_value;
 }
 
@@ -519,15 +511,10 @@ syscall_filesize (int fd)
 int
 fd_read (int fd, void *buffer, unsigned size)
 {
-  lock_filesys ();
   struct file *handle = filesys_get_file (fd);
   if (handle == NULL || file_is_dir (handle))
-    {
-      unlock_filesys ();
-      return -1;
-    }
+    return -1;
   off_t bytes_read = file_read (handle, buffer, size);
-  unlock_filesys ();
   return bytes_read;
 }
 
@@ -573,15 +560,10 @@ syscall_read (int fd, char *buffer, unsigned size)
 int
 fd_write (int fd, const void *buffer, unsigned size)
 {
-  lock_filesys ();
   struct file *handle = filesys_get_file (fd);
   if (handle == NULL || file_is_dir (handle))
-    {
-      unlock_filesys ();
-      return -1;
-    }
+    return -1;
   off_t bytes_written = file_write (handle, buffer, size);
-  unlock_filesys ();
   return bytes_written;
 }
 
@@ -635,15 +617,10 @@ syscall_write (int fd, const void *buffer, unsigned size)
 void
 fd_seek (int fd, unsigned position)
 {
-  lock_filesys ();
   struct file *handle = filesys_get_file (fd);
   if (handle == NULL || file_is_dir (handle))
-    {
-      unlock_filesys ();
-      return;
-    }
+    return;
   file_seek (handle, position);
-  unlock_filesys ();
 }
 
 /* -- System Call #10 --
@@ -661,10 +638,8 @@ syscall_seek (int fd, unsigned position)
 static unsigned
 syscall_tell (int fd)
 {
-  lock_filesys ();
   struct file *handle = filesys_get_file (fd);
   unsigned cursor = file_tell (handle);
-  unlock_filesys ();
   return cursor;
 }
 
@@ -673,11 +648,9 @@ syscall_tell (int fd)
 static void
 syscall_close (int fd)
 {
-  lock_filesys ();
   struct fd_elem *elem = filesys_get_fdelem (fd);
   if (elem != NULL)
     filesys_free_fdelem (elem);
-  unlock_filesys ();
 }
 
 /* -- System Call #13 --
@@ -766,9 +739,7 @@ syscall_readdir (int fd, char* name)
   if (validate_buffer (name, NAME_MAX) == NULL)
     syscall_exit (-1);
   
-  lock_filesys ();
   struct file *handle = filesys_get_file (fd);
-  unlock_filesys ();
   if (handle == NULL || !file_is_dir (handle))
     return false;
 
@@ -781,9 +752,7 @@ syscall_readdir (int fd, char* name)
 static bool
 syscall_isdir (int fd)
 {
-  lock_filesys ();
   struct file *file = filesys_get_file (fd);
-  unlock_filesys ();
   if (file == NULL)
     return -1;
   return file_is_dir (file);
@@ -795,9 +764,7 @@ syscall_isdir (int fd)
 static int
 syscall_inumber (int fd)
 {
-  lock_filesys ();
   struct file *file = filesys_get_file (fd);
-  unlock_filesys ();
   if (file == NULL)
     return -1;
   return inode_get_inumber (file->inode);
