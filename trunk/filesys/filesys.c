@@ -211,7 +211,6 @@ filesys_open (const char *name)
 bool
 filesys_remove (const char *name) 
 {
-  // TODO : Don't allow removal of non-empty dirs
   //printf ("Removing <%s>...\n", name);
   char name_short[NAME_MAX + 1];
   int parent_sector = filesys_split_path (name, name_short);
@@ -230,7 +229,6 @@ filesys_remove (const char *name)
       if (opencnt > 1)
         {
           file_close (file);
-          printf ("Denying remove of %s (inode is open %d times).\n", name, opencnt);
           return false;
         }
       
@@ -238,7 +236,6 @@ filesys_remove (const char *name)
       if (!dir_is_empty (file))
         {
           file_close (file);
-          printf ("Denying remove of %s (not empty).\n", name);
           return false;
         }
     }
