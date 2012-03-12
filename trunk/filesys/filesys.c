@@ -9,7 +9,7 @@
 #include "threads/thread.h"
 
 /* Partition that contains the file system. */
-struct block *fs_device;
+struct block *fs_device = NULL;
 
 static void do_format (void);
 
@@ -29,6 +29,13 @@ filesys_init (bool format)
     do_format ();
 
   free_map_open ();
+}
+
+/* Returns whether or not the filesystem has been initialized. */
+bool
+filesys_initialized (void)
+{
+  return fs_device != NULL;
 }
 
 /* Shuts down the file system module, writing any unwritten data
@@ -205,7 +212,6 @@ bool
 filesys_remove (const char *name) 
 {
   // TODO : Don't allow removal of non-empty dirs
-  // TODO : Don't allow removal of working dir
   //printf ("Removing <%s>...\n", name);
   char name_short[NAME_MAX + 1];
   int parent_sector = filesys_split_path (name, name_short);
@@ -220,9 +226,11 @@ filesys_remove (const char *name)
   if (file_is_dir (file))
     {
       /* If the dir's inode is open, we won't allow deletion of it. */
-      if (inode_get_open_count (file->inode) > 1)
+      int opencnt = inode_get_open_count (file->inode);
+      if (opencnt > 1)
         {
           file_close (file);
+          printf ("Denying remove of %s (inode is open %d times).\n", name, opencnt);
           return false;
         }
       
@@ -230,6 +238,7 @@ filesys_remove (const char *name)
       if (!dir_is_empty (file))
         {
           file_close (file);
+          printf ("Denying remove of %s (not empty).\n", name);
           return false;
         }
     }

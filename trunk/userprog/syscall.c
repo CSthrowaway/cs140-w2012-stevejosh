@@ -439,8 +439,10 @@ syscall_remove (const char *path)
   struct file *file = filesys_open (path);
   if (file)
     {
-      success = filesys_remove (path);
+      /* Close the file before removing it, so that filesys_remove doesn't
+         think that there's still an outstanding reference to the file. */
       file_close (file);
+      success = filesys_remove (path);
     }
   
   unlock_filesys ();
