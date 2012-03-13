@@ -43,7 +43,10 @@ struct inode_disk
     uint32_t l0[INODE_L0_BLOCKS];           /* Direct block sectors. */
   };
 
-/* Top part of the on-disk inode, only includes metadata (no block sectors. */
+/* Top part of the on-disk inode, only includes metadata (no block sectors).
+   This structure is useful for reading meta-information about a sector
+   without having to store a large structure on the stack. This helps to avoid
+   kernel stack overflow. */
 struct inode_disk_meta
   {
     off_t length;                           /* File size in bytes. */
@@ -94,45 +97,6 @@ block_to_sector (const struct inode_disk *inode, unsigned block)
       return indirect_lookup (indirect_lookup (inode->l2, l2_block), l2_offset);
     }
 }
-
-#if 0
-static void UNUSED
-inode_print (const struct inode_disk *inode)
-{
-  printf ("[%p]: %d blocks\n", inode, inode->blocks);
-  int i;
-  for (i = 0; i < inode->blocks; ++i)
-    printf ("%d->%d ", i, block_to_sector (inode, i));
-  printf ("\n");
-}
-
-static void UNUSED
-inode_validate_disk (const struct inode_disk *inode)
-{
-  ASSERT (inode->length <= inode->blocks * BLOCK_SECTOR_SIZE);
-  int i;
-  for (i = 0; i < inode->blocks; ++i)
-    {
-      int sector = block_to_sector (inode, i);
-      if (sector > 1000 || sector == 0)
-        {
-          printf ("block %d of inode %p failed: sector %d!\n", i, inode, sector);
-          printf ("direct: %d l1 size: %d l1 end: %d\nl2 size: %d l2 end: %d\n",
-            INODE_L0_BLOCKS, INODE_L1_BLOCKS, INODE_L1_END,
-            INODE_L2_BLOCKS, INODE_L2_END);
-          PANIC ("inode_validate: failed validation");
-        }
-    }
-}
-
-static void UNUSED
-inode_validate (const struct inode *inode)
-{
-  struct inode_disk in;
-  cache_read (inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
-  inode_validate_disk (&in);
-}
-#endif
 
 /* Returns the block device sector that contains byte offset POS
    within INODE. */
@@ -192,6 +156,9 @@ inode_unlock (struct inode *inode)
   lock_release (&inode->lock);
 }
 
+/* Allocate and append a single block to the given inode. The inode will be
+   updated appropriately to support the new block, which may involve adding
+   an indirect or doubly-indirect block in addition to the new data block. */
 static bool
 inode_extend_block (struct inode_disk *inode)
 {
@@ -311,13 +278,11 @@ inode_create (block_sector_t sector, off_t length, uint32_t status)
 	      {
 	        size_t i;
 	        for (i = 0; i < sectors; i++)
-	          {
-              if (!inode_extend_block (disk_inode))
-                {
-                  success = false;
-                  break;
-                }
-            }
+            if (!inode_extend_block (disk_inode))
+              {
+                success = false;
+                break;
+              }
 	      }
 	    cache_write (sector, disk_inode, 0, BLOCK_SECTOR_SIZE);
     }
@@ -334,6 +299,7 @@ inode_open (block_sector_t sector)
   struct list_elem *e;
   struct inode *inode;
 
+  lock_acquire (&open_inodes_lock);
   /* Check whether this inode is already open. */
   for (e = list_begin (&open_inodes); e != list_end (&open_inodes);
        e = list_next (e)) 
@@ -342,14 +308,14 @@ inode_open (block_sector_t sector)
       if (inode->sector == sector) 
         {
           inode_reopen (inode);
-          return inode; 
+          goto done;
         }
     }
 
   /* Allocate memory. */
   inode = malloc (sizeof *inode);
   if (inode == NULL)
-    return NULL;
+    goto done;
 
   /* Initialize. */
   list_push_front (&open_inodes, &inode->elem);
@@ -358,6 +324,9 @@ inode_open (block_sector_t sector)
   inode->deny_write_cnt = 0;
   inode->removed = false;
   lock_init (&inode->lock);
+
+done:
+  lock_release (&open_inodes_lock);
   return inode;
 }
 
@@ -366,7 +335,11 @@ struct inode *
 inode_reopen (struct inode *inode)
 {
   if (inode != NULL)
-    inode->open_cnt++;
+    {
+      inode_lock (inode);
+      inode->open_cnt++;
+      inode_unlock (inode);
+    }
   return inode;
 }
 
@@ -387,26 +360,32 @@ inode_close (struct inode *inode)
   if (inode == NULL)
     return;
 
-  // TODO : Synch this as well as accesses to the open inode list
+  lock_acquire (&open_inodes_lock);
 
   /* Release resources if this was the last opener. */
   if (--inode->open_cnt == 0)
     {
       /* Remove from inode list and release lock. */
       list_remove (&inode->elem);
- 
+      lock_release (&open_inodes_lock);
+      
       /* Deallocate blocks if removed. */
-      if (inode->removed) 
+      if (inode->removed)
         {
+          /* walk through the inode's allocated blocks, freeing them one at
+             a time. */
+          struct inode_disk in;
+          cache_read (inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
+          size_t i;
+          for (i = 0; i < in.blocks; ++i)
+            free_map_release (block_to_sector (&in, i), 1);
           free_map_release (inode->sector, 1);
-	  // TODO: Need to walk through direct, indirect, doubly indirect
-	  // blocks to deallocate sectors
-          /*free_map_release (inode->data.start,
-	    bytes_to_sectors (inode->data.length)); */
         }
 
       free (inode); 
     }
+  else
+    lock_release (&open_inodes_lock);
 }
 
 /* Marks INODE to be deleted when it is closed by the last caller who
@@ -414,8 +393,8 @@ inode_close (struct inode *inode)
 void
 inode_remove (struct inode *inode) 
 {
-  inode_lock (inode);
   ASSERT (inode != NULL);
+  inode_lock (inode);
   inode->removed = true;
   inode_unlock (inode);
 }
