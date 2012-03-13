@@ -145,6 +145,7 @@ cache_done (int slotid, bool written)
   slot[slotid].accessed = true;
   slot[slotid].dirty |= written;
 
+  cache_slot_flush (slotid, slot[slotid].sector);
   lock_release (&slot[slotid].lock);
 }
 
