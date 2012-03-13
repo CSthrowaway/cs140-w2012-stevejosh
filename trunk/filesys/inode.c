@@ -19,8 +19,6 @@
 #define INODE_L2_BLOCKS     (INODE_L1_BLOCKS * INODE_L1_BLOCKS)
 #define INODE_L2_END        (INODE_L1_END + INODE_L2_BLOCKS)
 
-
-
 /* In-memory inode. */
 struct inode
   {
@@ -43,6 +41,15 @@ struct inode_disk
     uint32_t l2;                            /* Sector of doubly indirect block. */
     uint32_t l1;                            /* Sector of indirect block. */
     uint32_t l0[INODE_L0_BLOCKS];           /* Direct block sectors. */
+  };
+
+/* Top part of the on-disk inode, only includes metadata (no block sectors. */
+struct inode_disk_meta
+  {
+    off_t length;                           /* File size in bytes. */
+    unsigned magic;                         /* Magic number. */
+    uint32_t blocks;                        /* Number of allocated blocks. */
+    uint32_t status;                        /* Status bits. */
   };
 
 /* On-disk indirect or doubly-indirect block full of indices. */
@@ -144,12 +151,16 @@ byte_to_sector (const struct inode *inode, off_t pos)
    returns the same `struct inode'. */
 static struct list open_inodes;
 
+/* Lock for accesses to the open_inodes list. */
+static struct lock open_inodes_lock;
+
 /* Initializes the inode module. */
 void
-inode_init (void) 
+inode_init (void)
 {
   ASSERT (sizeof (struct inode_disk) == BLOCK_SECTOR_SIZE);
   list_init (&open_inodes);
+  lock_init (&open_inodes_lock);
 }
 
 /* Allocate a new block, zero the contents, and return the sector number. */
@@ -376,6 +387,8 @@ inode_close (struct inode *inode)
   if (inode == NULL)
     return;
 
+  // TODO : Synch this as well as accesses to the open inode list
+
   /* Release resources if this was the last opener. */
   if (--inode->open_cnt == 0)
     {
@@ -401,8 +414,10 @@ inode_close (struct inode *inode)
 void
 inode_remove (struct inode *inode) 
 {
+  inode_lock (inode);
   ASSERT (inode != NULL);
   inode->removed = true;
+  inode_unlock (inode);
 }
 
 /* Reads SIZE bytes from INODE into BUFFER, starting at position OFFSET.
@@ -524,8 +539,10 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 void
 inode_deny_write (struct inode *inode) 
 {
+  inode_lock (inode);
   inode->deny_write_cnt++;
   ASSERT (inode->deny_write_cnt <= inode->open_cnt);
+  inode_unlock (inode);
 }
 
 /* Re-enables writes to INODE.
@@ -534,17 +551,19 @@ inode_deny_write (struct inode *inode)
 void
 inode_allow_write (struct inode *inode) 
 {
+  inode_lock (inode);
   ASSERT (inode->deny_write_cnt > 0);
   ASSERT (inode->deny_write_cnt <= inode->open_cnt);
   inode->deny_write_cnt--;
+  inode_unlock (inode);
 }
 
 /* Returns the length, in bytes, of INODE's data. */
 off_t
 inode_length (const struct inode *inode)
 {
-  struct inode_disk in;
-  cache_read(inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
+  struct inode_disk_meta in;
+  cache_read(inode->sector, &in, 0, sizeof in);
   return in.length;
 }
 
@@ -559,8 +578,8 @@ inode_get_open_count (const struct inode *inode)
 bool 
 inode_get_attribute (struct inode *inode, uint32_t attribute)
 {
-  struct inode_disk in;
-  cache_read(inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
+  struct inode_disk_meta in;
+  cache_read(inode->sector, &in, 0, sizeof in);
   return (in.status & attribute) != 0;
 }
 
@@ -568,11 +587,11 @@ inode_get_attribute (struct inode *inode, uint32_t attribute)
 void
 inode_set_attribute (struct inode *inode, uint32_t attribute, bool on)
 {
-  struct inode_disk in;
-  cache_read(inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
+  struct inode_disk_meta in;
+  cache_read(inode->sector, &in, 0, sizeof in);
   if (on) in.status |= attribute;
   else    in.status &= ~attribute;
-  cache_write(inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
+  cache_write(inode->sector, &in, 0, sizeof in);
 }
 
 /* Returns the sector of the inode. */

@@ -216,13 +216,10 @@ lock_acquire (struct lock *lock)
   /* If the lock is currently held by someone, then we need to invoke
      thread_donate_priority to donate our priority to that special
      someone. */  
-  if (!thread_mlfqs) // If using priority scheduler
+  if (!thread_mlfqs && lock->holder != NULL)
     {
-      if (lock->holder != NULL)
-	      {
-	        thread_current ()->waiting_on = lock;
-	        thread_donate_priority (thread_current ());
-	      }
+      thread_current ()->waiting_on = lock;
+      thread_donate_priority (thread_current ());
     }
 
   sema_down (&lock->semaphore);
@@ -233,7 +230,7 @@ lock_acquire (struct lock *lock)
   intr_set_level (old_level);
 }
 
-/* Tries to acquires LOCK and returns true if successful or false
+/* Tries to acquire LOCK and returns true if successful or false
    on failure.  The lock must not already be held by the current
    thread.
 
@@ -264,9 +261,7 @@ lock_release (struct lock *lock)
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
 
-  enum intr_level old_level;
-  old_level = intr_disable ();
-
+  enum intr_level old_level = intr_disable ();
   lock->holder = NULL;
 
   /* If we're using the priority scheduler, loop through all threads

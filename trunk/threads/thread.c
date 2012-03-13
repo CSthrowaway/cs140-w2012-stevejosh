@@ -63,7 +63,7 @@ static long long user_ticks;    /* # of timer ticks in user programs. */
 static real load_avg;           /* load average for BSD scheduling */
 
 /* Scheduling. */
-#define TIME_SLICE 1            /* # of timer ticks to give each thread. */
+#define TIME_SLICE 4            /* # of timer ticks to give each thread. */
 static unsigned thread_ticks;   /* # of timer ticks since last yield. */
 
 /* If false (default), use round-robin scheduler.
@@ -184,7 +184,7 @@ void
 thread_tick (void) 
 {
   struct thread *t = thread_current ();
-
+  
   /* Update statistics. */
   if (t == idle_thread)
     idle_ticks++;
@@ -334,7 +334,7 @@ thread_max_priority (void)
                                      struct thread, elem);
       return_value = t->priority;
     }
-    
+
   intr_set_level (old_level);
   return return_value;
 }
@@ -471,13 +471,16 @@ thread_get_donated_priority (struct thread *t)
 {
   ASSERT (is_thread (t));
   
+  enum intr_level old_level = intr_disable ();
+  int return_value = -1;
   if (list_begin (&t->priority_donations) != list_end (&t->priority_donations))
     {
       struct thread *top = list_entry (list_begin (&t->priority_donations),
                                        struct thread, donation_elem);
-      return top->priority;
+      return_value = top->priority;
     }
-  return -1;
+  intr_set_level (old_level);
+  return return_value;
 }
 
 /* Removes a thread from the ready list and then inserts it back in so the
@@ -496,13 +499,15 @@ thread_reinsert_ready_list (struct thread *t)
     }
 }
 
-/* Calculates and sets the current thread's priority, taking
+/* Calculates and sets the current thread's listpriority, taking
    into consideration all priority donations that are in effect,
    as well as the thread's base priority. */
 void
 thread_calculate_priority (struct thread *t)
 {
   ASSERT (is_thread (t));
+  
+  enum intr_level old_level = intr_disable ();
   
   int donated_priority = thread_get_donated_priority (t);
   if (donated_priority > t->base_priority)
@@ -511,6 +516,7 @@ thread_calculate_priority (struct thread *t)
     t->priority = t->base_priority;
 
   thread_reinsert_ready_list(t);
+  intr_set_level (old_level);
 }
 
 /* Calculates and sets the current thread's priority, based on
@@ -565,33 +571,45 @@ thread_donation_cmp (const struct list_elem *a,
 void
 thread_donate_priority (struct thread *t)
 {
-  ASSERT (intr_get_level () == INTR_OFF);
-  ASSERT (is_thread (t));
-
-  /* Recalculate our priority, in case someone else bumped us. */
-  thread_calculate_priority (t);
-
-  if (t->waiting_on != NULL)
+  while (true)
     {
-      struct thread *waiter = t->waiting_on->holder;
-      
-      /* If this isn't the running thread and it's waiting on something,
-         then it must have already donated to another thread, so we need
-         to remove and re-insert that donation to preserve ordering. */
-      if (running_thread() != t)
-        thread_recall_donation (t);
-    
-      if (waiter != NULL)
+      ASSERT (intr_get_level () == INTR_OFF);
+      ASSERT (is_thread (t));
+
+      /* Recalculate our priority, in case someone else bumped us. */
+      thread_calculate_priority (t);
+
+      if (t->waiting_on != NULL)
         {
-          /* Make the donation. */
-          list_insert_ordered (&waiter->priority_donations, &t->donation_elem,
-                               thread_donation_cmp, NULL);
-      
-          /* Recursively call this function on the thread we're waiting on
-             so that it updates its own effective priority and updates its
-             own donations appropriately. */
-          thread_donate_priority (waiter);
+          struct thread *waiter = t->waiting_on->holder;
+          ASSERT (waiter != t);
+          
+          /* If this isn't the running thread and it's waiting on something,
+             then it must have already donated to another thread, so we need
+             to remove and re-insert that donation to preserve ordering. */
+          if (thread_current () != t)
+            thread_recall_donation (t);
+
+          if (waiter != NULL)
+            {
+              thread_calculate_priority (waiter);
+              ASSERT (is_thread (waiter));
+
+              /* Make the donation. */
+              list_insert_ordered (&waiter->priority_donations,
+                                   &t->donation_elem,
+                                   thread_donation_cmp, NULL);
+              
+              /* Recursively call this function on the thread we're waiting on
+                 so that it updates its own effective priority and updates its
+                 own donations appropriately. */
+              t = waiter;
+            }
+          else
+            break;
         }
+      else
+        break;
     }
 }
 
@@ -605,7 +623,13 @@ thread_recall_donation (struct thread *t)
   ASSERT (intr_get_level () == INTR_OFF);
   ASSERT (is_thread (t));
   
-  list_remove (&t->donation_elem);
+  /* Just to be safe, make sure we actually made a donation before trying to
+     remove it! */
+  if (t->donation_elem.next != NULL)
+    {
+      list_remove (&t->donation_elem);
+      t->donation_elem.next = NULL;
+    }
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -730,11 +754,14 @@ init_thread (struct thread *t, const char *name, int priority)
   t->fileNumber = 2; // Reserve 0 and 1 for stdin and stdout
   t->base_priority = priority;
   t->magic = THREAD_MAGIC;
+
+#ifdef USERPROG
   t->parent = running_thread ();
   cond_init (&t->child_changed);
   lock_init (&t->child_changed_lock);
   list_init (&t->children);
   list_init (&t->open_files);
+#endif
   list_init (&t->priority_donations);
 #ifdef VM
   list_init (&t->mmap_table);
