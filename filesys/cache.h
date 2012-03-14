@@ -8,3 +8,4 @@ void cache_read (block_sector_t sector, void *buffer, off_t off, unsigned size);
 void cache_write (block_sector_t sector, const void *data,
                   off_t off, unsigned size);
 void cache_zero (block_sector_t sector);
+void cache_flush (void);

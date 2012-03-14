@@ -184,7 +184,6 @@ dir_add (struct file *dir, const char *name, block_sector_t inode_sector)
      inode_read_at() will only return a short read at end of file.
      Otherwise, we'd need to verify that we didn't get a short
      read due to something intermittent such as low memory. */
-  // TODO Synch
   size_t dir_size = inode_length (dir->inode);
   for (ofs = 0; ofs < dir_size; ofs += sizeof e) 
     {

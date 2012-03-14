@@ -1,9 +1,11 @@
 #include <string.h>
 #include <random.h>
 #include <debug.h>
+#include "devices/timer.h"
 #include "filesys/filesys.h"
 #include "filesys/cache.h"
 #include "threads/synch.h"
+#include "threads/thread.h"
 
 #define MAX_SECTORS     (8 * 1024 * 1024 / BLOCK_SECTOR_SIZE)
 
@@ -29,6 +31,16 @@ static struct lock io_lock;
 static struct cache_data slot[CACHE_SIZE];
 static struct cache_block block[CACHE_SIZE];
 
+static void
+cache_daemon (void *aux UNUSED)
+{
+  while (true)
+    {
+      timer_ssleep (30);
+      cache_flush ();
+    }
+}
+
 void
 cache_init (void)
 {
@@ -46,6 +58,8 @@ cache_init (void)
       slot[i].accessed = false;
       lock_init (&slot[i].lock);
     }
+
+  thread_create ("cache_daemon", PRI_DEFAULT, cache_daemon, NULL);
 }
 
 static void
@@ -59,6 +73,26 @@ cache_slot_flush (int slotid, int sector)
   lock_release (&io_lock);
   
   slot[slotid].dirty = false;
+}
+
+void
+cache_flush (void)
+{
+  int i;
+  for (i = 0; i < CACHE_SIZE; ++i)
+    {
+      lock_acquire (&cache_lock);
+      if (slot[i].new_sector < 0 &&
+          slot[i].dirty)
+        {
+          lock_release (&cache_lock);
+          lock_acquire (&slot[i].lock);
+          cache_slot_flush (i, slot[i].sector);
+          lock_release (&slot[i].lock);
+        }
+      else
+        lock_release (&cache_lock);
+    }
 }
 
 /* Force the given cache slot to load sector data for the given sector from
@@ -145,7 +179,8 @@ cache_done (int slotid, bool written)
   slot[slotid].accessed = true;
   slot[slotid].dirty |= written;
 
-  cache_slot_flush (slotid, slot[slotid].sector);
+  // TODO : Not do this.
+  //cache_slot_flush (slotid, slot[slotid].sector);
   lock_release (&slot[slotid].lock);
 }
 

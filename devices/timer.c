@@ -95,12 +95,20 @@ timer_sleep (int64_t ticks)
   thread_sleep (start + ticks);
 }
 
+/* Sleeps for approximately S seconds.  Interrupts must be
+   turned on. */
+void
+timer_ssleep (int64_t s)
+{
+  timer_sleep (s * TIMER_FREQ);
+}
+
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
    turned on. */
 void
 timer_msleep (int64_t ms) 
 {
-  real_time_sleep (ms, 1000);
+  timer_sleep (ms * TIMER_FREQ / 1000);
 }
 
 /* Sleeps for approximately US microseconds.  Interrupts must be
@@ -108,7 +116,7 @@ timer_msleep (int64_t ms)
 void
 timer_usleep (int64_t us) 
 {
-  real_time_sleep (us, 1000 * 1000);
+  timer_sleep (us * TIMER_FREQ / (1000 * 1000));
 }
 
 /* Sleeps for approximately NS nanoseconds.  Interrupts must be
@@ -116,7 +124,7 @@ timer_usleep (int64_t us)
 void
 timer_nsleep (int64_t ns) 
 {
-  real_time_sleep (ns, 1000 * 1000 * 1000);
+  timer_sleep (ns * TIMER_FREQ / (1000 * 1000 * 1000));
 }
 
 /* Busy-waits for approximately MS milliseconds.  Interrupts need
