@@ -111,6 +111,18 @@ byte_to_sector (const struct inode *inode, off_t pos)
   return block_to_sector (&in, pos / BLOCK_SECTOR_SIZE);
 }
 
+void
+inode_print (const struct inode *inode)
+{
+  struct inode_disk in;
+  cache_read (inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
+  printf ("[%p]: %d blocks\n", inode, in.blocks);
+  int i;
+  for (i = 0; i < in.blocks; ++i)
+    printf ("%d->%d ", i, block_to_sector (&in, i));
+  printf ("\n");
+}
+
 /* List of open inodes, so that opening a single inode twice
    returns the same `struct inode'. */
 static struct list open_inodes;
@@ -407,10 +419,11 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
 {
   uint8_t *buffer = buffer_;
   off_t bytes_read = 0;
+  off_t inode_len = inode_length (inode);
 
   /* If they're trying to read past the end of the file, we automatically
      fail to read anything. */
-  if (offset >= inode_length (inode))
+  if (offset >= inode_len)
     return 0;
 
   while (size > 0) 
@@ -420,7 +433,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 
       /* Bytes left in inode, bytes left in sector, lesser of the two. */
-      off_t inode_left = inode_length (inode) - offset;
+      off_t inode_left = inode_len - offset;
       int sector_left = BLOCK_SECTOR_SIZE - sector_ofs;
       int min_left = inode_left < sector_left ? inode_left : sector_left;
 
@@ -539,10 +552,12 @@ inode_allow_write (struct inode *inode)
 
 /* Returns the length, in bytes, of INODE's data. */
 off_t
-inode_length (const struct inode *inode)
+inode_length (struct inode *inode)
 {
+  bool locked = inode_lock (inode);
   struct inode_disk_meta in;
   cache_read(inode->sector, &in, 0, sizeof in);
+  if (locked) inode_unlock (inode);
   return in.length;
 }
 
