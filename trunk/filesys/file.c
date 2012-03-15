@@ -46,10 +46,10 @@ file_close (struct file *file)
 }
 
 /* Acquires a lock on the given file's inode. */
-void
+bool
 file_lock (struct file *file)
 {
-  inode_lock (file->inode);
+  return inode_lock (file->inode);
 }
 
 /* Releases a lock on the given file's inode. */

@@ -411,7 +411,6 @@ syscall_wait (pid_t pid)
 static bool
 syscall_create (const char *file, unsigned initial_size)
 {
-  // TODO : Make sure they can't create files with names longer than NAME_MAX!
   if (!is_valid_filename (file))
     return false;
 
@@ -719,10 +718,8 @@ syscall_chdir (const char *path)
 static bool
 syscall_mkdir (const char* path)
 {
-  // TODO : Make sure they can't make dir names longer than NAME_MAX!
   if (!is_valid_filename (path))
     return false;
-
   return filesys_create_dir (path);
 }
 
@@ -769,7 +766,6 @@ syscall_inumber (int fd)
     return -1;
   return inode_get_inumber (file->inode);
 }
-
 
 static void
 syscall_handler (struct intr_frame *f)
