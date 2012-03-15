@@ -63,46 +63,89 @@ filesys_split_path (const char *path, char *element)
     {
       char partial_path[FILE_PATH_MAX + 1];
       strlcpy (partial_path, path, last_slash - path + 2);
-      strlcpy (element, last_slash + 1, NAME_MAX);
+      strlcpy (element, last_slash + 1, NAME_MAX + 1);
       return filesys_lookup (partial_path);
     }
 }
 
 static bool
+filesys_name_valid (const char *name)
+{
+  size_t token_length = 0;
+  char c;
+  for (; (c = *name) != '\0'; name++)
+    {
+      token_length++;
+      if (c == '/') token_length = 0;
+      if (token_length > NAME_MAX)
+        return false;
+    }
+  return true;
+}
+
+static bool
 filesys_do_create (const char *name, off_t initial_size, bool is_dir)
 {
+  /* Check to make sure that this is a valid name. */
+  if (!filesys_name_valid (name))
+    return false;
+
+  bool locked = false;
   block_sector_t inode_sector = 0;
+  struct file *self = NULL;
+  
   if (!free_map_allocate (1, &inode_sector))
     return false;
+  
+  /* Try to create the inode. */
+  uint32_t inode_flags = is_dir ? INODE_DIR : 0;
+  if (!(inode_create (inode_sector, initial_size, inode_flags)))
+    goto failed;
 
   char name_short[NAME_MAX + 1];
   int parent_sector = filesys_split_path (name, name_short);
 
-  //printf ("<%s> (%s) will be created in directory %d.\n", name, name_short, parent_sector);
+  if (parent_sector < 0) return false;
+  
+  self = file_open (inode_open (inode_sector));
+  if (self == NULL) goto failed;
 
-  uint32_t inode_flags = is_dir ? INODE_DIR : 0;
-  if (!(inode_create (inode_sector, initial_size, inode_flags)))
-    goto failed;
-    
+  /* Acquire a lock on the file we're creating so that no one can access it
+     while we're in the process of creating it (this is particularly
+     important for directories, which cannot be accessed until we create the
+     "." and ".." entries). */
+  locked = file_lock (self);
+  ASSERT (locked);
+  
   struct file *parent = file_open (inode_open (parent_sector));
-  if (!dir_add (parent, name_short, inode_sector))
+  if (parent == NULL) goto failed;
+
+  /* Make sure that the parent is actually a directory, then try to add the new
+     file to the parent's directory listing. */
+  if (!file_is_dir (parent) ||
+      !dir_add (parent, name_short, inode_sector))
     {
       file_close (parent);
       goto failed;
     }
-
   file_close (parent);
 
+  /* If we're creating a directory, then we need to populate it with the "."
+     and ".." entries. */
   if (is_dir)
     {
-      struct file *self = file_open (inode_open (inode_sector));
       dir_add (self, ".", inode_sector);
       dir_add (self, "..", parent_sector);
-      file_close (self);
     }
+    
+  /* Finally, release the lock and close this file. */
+  file_unlock (self);
+  file_close (self);
   return true;
 
 failed:
+  if (locked) file_unlock (self);
+  if (self)   file_close (self);
   free_map_release (inode_sector, 1);
   return false;
 }

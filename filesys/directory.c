@@ -87,7 +87,7 @@ bool
 dir_readdir (struct file *dir, char *buf)
 {
   ASSERT (file_is_dir (dir));
-  file_lock (dir);
+  bool locked = file_lock (dir);
   /* If the cursor is before the third entry, then it's pointing at "." or "..",
      since there are *always* the first two directory entries. Seek to beyond
      them, since we don't want to return them. */
@@ -110,7 +110,7 @@ dir_readdir (struct file *dir, char *buf)
     }
     
 done:
-  file_unlock (dir);
+  if (locked) file_unlock (dir);
   return success;
 }
 
@@ -172,7 +172,7 @@ dir_add (struct file *dir, const char *name, block_sector_t inode_sector)
   if (*name == '\0' || strlen (name) > NAME_MAX)
     return false;
 
-  file_lock (dir);
+  bool locked = file_lock (dir);
   /* Check that NAME is not in use. */
   if (dir_lookup (dir, name) >= 0)
     goto done;
@@ -199,7 +199,7 @@ dir_add (struct file *dir, const char *name, block_sector_t inode_sector)
   success = inode_write_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
 
  done:
-  file_unlock (dir);
+  if (locked) file_unlock (dir);
   return success;
 }
 
@@ -219,7 +219,7 @@ dir_remove (struct file *dir, const char *name)
   ASSERT (dir != NULL);
   ASSERT (name != NULL);
 
-  file_lock (dir);
+  bool locked = file_lock (dir);
   /* Find directory entry. */
   if ((sector = lookup (dir, name, &ofs, &e)) < 0)
     goto done;
@@ -239,7 +239,7 @@ dir_remove (struct file *dir, const char *name)
   success = true;
 
  done:
-  file_unlock (dir);
-  if (inode) inode_close (inode);
+  if (locked) file_unlock (dir);
+  if (inode)  inode_close (inode);
   return success;
 }

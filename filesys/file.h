@@ -20,7 +20,7 @@ struct file *file_reopen (struct file *);
 void file_close (struct file *);
 struct inode *file_get_inode (struct file *);
 bool file_is_dir (struct file *file);
-void file_lock (struct file *file);
+bool file_lock (struct file *file);
 void file_unlock (struct file *file);
 
 /* Reading and writing. */

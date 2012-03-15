@@ -359,6 +359,7 @@ inode_reopen (struct inode *inode)
 block_sector_t
 inode_get_inumber (const struct inode *inode)
 {
+  ASSERT (inode != NULL);
   return inode->sector;
 }
 
@@ -368,6 +369,7 @@ inode_get_inumber (const struct inode *inode)
 void
 inode_close (struct inode *inode) 
 {
+  ASSERT (inode != NULL);
   /* Ignore null pointer. */
   if (inode == NULL)
     return;
@@ -417,6 +419,7 @@ inode_remove (struct inode *inode)
 off_t
 inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) 
 {
+  ASSERT (inode != NULL);
   uint8_t *buffer = buffer_;
   off_t bytes_read = 0;
   off_t inode_len = inode_length (inode);
@@ -460,6 +463,7 @@ off_t
 inode_write_at (struct inode *inode, const void *buffer_, off_t size,
                 off_t offset) 
 {
+  ASSERT (inode != NULL);
   const uint8_t *buffer = buffer_;
   off_t bytes_written = 0;
 
@@ -531,6 +535,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 void
 inode_deny_write (struct inode *inode) 
 {
+  ASSERT (inode != NULL);
   inode_lock (inode);
   inode->deny_write_cnt++;
   ASSERT (inode->deny_write_cnt <= inode->open_cnt);
@@ -543,6 +548,7 @@ inode_deny_write (struct inode *inode)
 void
 inode_allow_write (struct inode *inode) 
 {
+  ASSERT (inode != NULL);
   inode_lock (inode);
   ASSERT (inode->deny_write_cnt > 0);
   ASSERT (inode->deny_write_cnt <= inode->open_cnt);
@@ -554,6 +560,7 @@ inode_allow_write (struct inode *inode)
 off_t
 inode_length (struct inode *inode)
 {
+  ASSERT (inode != NULL);
   bool locked = inode_lock (inode);
   struct inode_disk_meta in;
   cache_read(inode->sector, &in, 0, sizeof in);
@@ -565,6 +572,7 @@ inode_length (struct inode *inode)
 int
 inode_get_open_count (const struct inode *inode)
 {
+  ASSERT (inode != NULL);
   return inode->open_cnt;
 }
 
@@ -572,6 +580,7 @@ inode_get_open_count (const struct inode *inode)
 bool 
 inode_get_attribute (struct inode *inode, uint32_t attribute)
 {
+  ASSERT (inode != NULL);
   struct inode_disk_meta in;
   cache_read(inode->sector, &in, 0, sizeof in);
   return (in.status & attribute) != 0;
@@ -581,6 +590,7 @@ inode_get_attribute (struct inode *inode, uint32_t attribute)
 void
 inode_set_attribute (struct inode *inode, uint32_t attribute, bool on)
 {
+  ASSERT (inode != NULL);
   struct inode_disk_meta in;
   cache_read(inode->sector, &in, 0, sizeof in);
   if (on) in.status |= attribute;
