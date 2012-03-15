@@ -7,10 +7,14 @@
 #include "threads/synch.h"
 #include "threads/thread.h"
 
-#define MAX_SECTORS         (8 * 1024 * 1024 / BLOCK_SECTOR_SIZE)
+/* Number of milliseconds to wait before flushing all cached data to disk. */
+#define CACHE_DAEMON_PERIOD 1000
 
-/* Number of seconds to wait before flushing all cached data to disk. */
-#define CACHE_DAEMON_PERIOD 10
+/* Maximum size of the read-ahead queue. If the queue grows larger than this,
+   old requests will be discarded and replaced by new ones (the old ones
+   wouldn't be of use anyway, since they would be evicted by new requests
+   before having a chance to get used). */
+#define RA_QUEUE_SIZE CACHE_SIZE
 
 /* Maximum number of accesses that a slot is allowed to record. Raising this
    constant means that a heavily-accessed slot will get more "second chances"
@@ -22,36 +26,14 @@
 /* cache_data contains the metadata for a single cache slot. */
 struct cache_data
   {
-    bool dirty;
-    int accesses;
-    int sector;
-    int new_sector;
-    struct lock lock;
+    bool dirty;       /* Whether the slot has been written to. */
+    int accesses;     /* How many times the slot has been accessed. */
+    int sector;       /* The disk sector to which this slot corresponds. */
+    int new_sector;   /* If the slot is being evicted, the sector that will
+                         replace the current one after eviction. -1 if the
+                         slot is not being evicted. */
+    struct lock lock; /* Lock for synchronizing access to the slot. */
   };
-
-/* Synchronization of cache_data members:
-
-  bool dirty
-    read  : cache_lock
-    write : slot lock (single writer)
-
-  accesses
-    read  : cache_lock
-    write : slot lock (single writer)
-
-  sector
-    read  : cache_lock
-    write : slot lock (single writer)
-
-  new_sector
-    read  : cache_lock
-    write : cache_lock
-
-  NOTE : The value of new_sector acts as a lock to ensure that only one thread
-         is ever waiting to evict the slot. Reads/writes are synched with
-         cache_lock, so once a thread sets new_sector, others know not to touch
-         it.
-*/
 
 /* cache_block provides a convenient way to declare and access
    BLOCK_SECTOR_SIZE chunks of data. */
@@ -60,26 +42,60 @@ struct cache_block
     char data[BLOCK_SECTOR_SIZE];
   };
 
-static struct lock cache_lock;
-static struct lock io_lock;
-static struct cache_data slot[CACHE_SIZE];
-static struct cache_block block[CACHE_SIZE];
+static struct lock cache_lock;                /* Cache metadata lock. */
+static struct lock io_lock;                   /* Block device lock. */
+static struct cache_data slot[CACHE_SIZE];    /* Cache slot metadata. */
+static struct cache_block block[CACHE_SIZE];  /* Cache slot buffers. */
 
-/* Statistics for analyzing cache efficiency. */
-static int flushes = 0;
-static int cache_misses = 0;
-static int cache_hits = 0;
+static struct lock ra_lock;                   /* Read-ahead queue lock. */
+static struct condition ra_cond;              /* Read-ahead condition variable
+                                                 for waking daemon. */
+static int ra_queue[RA_QUEUE_SIZE];           /* Read-ahead queue. */
+static int ra_queue_counter = 0;              /* Read-ahead queue position. */
 
-/* Forces a cache flush every CACHE_DAEMON_PERIOD seconds, sleeps in between.
-   Guarantees that data older than CACHE_DAEMON_PERIOD seconds won't be lost
-   in a crash. */
+static void cache_done (int slotid, bool written);
+static int cache_get_slot (int sector);
+
+/* Write-behind cache daemon: forces a cache flush every CACHE_DAEMON_PERIOD
+   seconds, sleeps in between. Guarantees that data older than
+   CACHE_DAEMON_PERIOD milliseconds won't be lost in a crash. */
 static void
-cache_daemon (void *aux UNUSED)
+cache_daemon_wb (void *aux UNUSED)
 {
   while (true)
     {
-      timer_ssleep (CACHE_DAEMON_PERIOD);
+      timer_msleep (CACHE_DAEMON_PERIOD);
       cache_flush ();
+    }
+}
+
+/* Read-ahead cache daemon: services read-ahead requests, allowing precaching
+   of disk sectors before they get used. Ideally, improves performance by
+   reducing I/O time for processes. */
+static void
+cache_daemon_ra (void *aux UNUSED)
+{
+  int queue_pos = 0;
+  while (true)
+    {
+      lock_acquire (&ra_lock);
+      
+      /* Wait for requests to come in. */
+      while (queue_pos == ra_queue_counter)
+        cond_wait (&ra_cond, &ra_lock);
+
+      /* Retrieve the sector of the next request. */
+      int queue_cur = queue_pos % RA_QUEUE_SIZE;
+      int sector = ra_queue[queue_cur];
+      ASSERT (sector >= 0);
+      
+      /* Now we can release the lock, since we've pulled the sector number. */
+      lock_release (&ra_lock);
+      
+      /* Service the request and increment our own queue counter. */
+      int slotid = cache_get_slot (sector);
+      cache_done (slotid, false);
+      queue_pos++;
     }
 }
 
@@ -88,6 +104,8 @@ cache_init (void)
 {
   lock_init (&cache_lock);
   lock_init (&io_lock);
+  lock_init (&ra_lock);
+  cond_init (&ra_cond);
 
   /* Clear all of the cache metadata. By default, all cache slots will contain
      sector -1 (meaning no sector). */
@@ -101,9 +119,13 @@ cache_init (void)
       lock_init (&slot[i].lock);
     }
 
-  /* Spawn a thread for the cache daemon, which will force a buffer cache
-     flush every CACHE_DAEMON_PERIOD seconds. */
-  thread_create ("cache_daemon", PRI_DEFAULT, cache_daemon, NULL);
+  for (i = 0; i < RA_QUEUE_SIZE; ++i)
+    ra_queue[i] = -1;
+
+  /* Spawn a thread for the cache daemons, which will implement write-behind
+     and read-ahead. */
+  thread_create ("cached_wb", PRI_DEFAULT, cache_daemon_wb, NULL);
+  thread_create ("cached_ra", PRI_DEFAULT, cache_daemon_ra, NULL);
 }
 
 /* Flushes the given cache slot's data to the given sector. Marks the slot as
@@ -112,8 +134,9 @@ cache_init (void)
 static void
 cache_slot_flush (int slotid, int sector)
 {
+  ASSERT (lock_held_by_current_thread (&slot[slotid].lock));
   ASSERT (slotid >= 0 && slotid < CACHE_SIZE);
-  ASSERT (sector >= 0 && sector < MAX_SECTORS);
+  ASSERT (sector >= 0);
   ASSERT (slot[slotid].dirty);
  
   lock_acquire (&io_lock);
@@ -143,8 +166,9 @@ cache_flush (void)
 static void
 cache_slot_load (int slotid, int sector)
 {
+  ASSERT (lock_held_by_current_thread (&slot[slotid].lock));
   ASSERT (slotid >= 0 && slotid < CACHE_SIZE);
-  ASSERT (sector >= 0 && sector < MAX_SECTORS);
+  ASSERT (sector >= 0);
   
   lock_acquire (&io_lock);
   block_read (fs_device, sector, block[slotid].data);
@@ -154,36 +178,58 @@ cache_slot_load (int slotid, int sector)
 static int
 cache_alloc (int new_sector)
 {
-  static int clock = -1;
-  while (true)
-    {
-      clock = (clock + 1) % CACHE_SIZE;
-      if (slot[clock].new_sector < 0)
-        {
-          if (slot[clock].accesses == 0)
-            break;
-          else
-            slot[clock].accesses--;
-        }
-    }
-  
-  slot[clock].new_sector = new_sector;
+  ASSERT (lock_held_by_current_thread (&cache_lock));
+
+  int evict;
+  {
+    static int clock = -1;
+    while (true)
+      {
+        clock = (clock + 1) % CACHE_SIZE;
+        if (slot[clock].new_sector < 0)
+          {
+            if (slot[clock].accesses == 0)
+              break;
+            else
+              slot[clock].accesses--;
+          }
+      }
+    
+    /* Store the eviction index, since clock is subject to change as soon as we
+       release the cache_lock. */
+    evict = clock;
+  }
+
+  /* Once we mark the slot as in the process of eviction, we are free to
+     release the cache lock, since no other thread will try to evict this
+     slot. */
+  slot[evict].new_sector = new_sector;
   lock_release (&cache_lock);
   
-  lock_acquire (&slot[clock].lock);
-  if (slot[clock].dirty)
-    cache_slot_flush (clock, slot[clock].sector);
+  /* Now, we need to acquire a lock on the slot we wish to evict. */
+  lock_acquire (&slot[evict].lock);
 
-  slot[clock].sector = new_sector;
-  slot[clock].new_sector = -1;
-  slot[clock].accesses = 0;
-  return clock;
+  /* If it's dirty, we'll need to flush the slot to disk. */
+  if (slot[evict].dirty)
+    cache_slot_flush (evict, slot[evict].sector);
+
+  /* Clear the slot's metadata. */
+  slot[evict].sector = new_sector;
+  slot[evict].new_sector = -1;
+  slot[evict].accesses = 0;
+  return evict;
 }
 
+/* Finds the buffer cache slot corresponding to the given sector. If such a
+   slot does not exist, this will allocate a new slot, forcing the eviction of
+   an older sector if necessary. Returns the slot id of a slot that now (at the
+   time of returning) corresponds to the given sector. When this returns, the
+   caller will own the lock on the returned slot. */
 static int
 cache_get_slot (int sector)
 {
-  ASSERT (sector >= 0 && sector < MAX_SECTORS);
+  ASSERT (sector >= 0);
+
   while (true)
     {
       lock_acquire (&cache_lock);
@@ -196,11 +242,16 @@ cache_get_slot (int sector)
             slotid = i;
       }
       
+      /* If we were unable to find a slot corresponding to this sector, we'll
+         have to allocate a new one. */
       if (slotid < 0)
         {
           slotid = cache_alloc (sector);
+          ASSERT (slotid >= 0 && slotid < CACHE_SIZE);
+          ASSERT (lock_held_by_current_thread (&slot[slotid].lock));
           cache_slot_load (slotid, sector);
         }
+      /* Otherwise, we can just acquire a lock on the existing one. */
       else
         {
           lock_release (&cache_lock);
@@ -219,10 +270,13 @@ cache_get_slot (int sector)
           return slotid;
         }
 
+      /* If we failed, we'll have to try again. */
       lock_release (&slot[slotid].lock);
     }
 }
 
+/* Releases the lock on the given slot, as well as modifies the dirty bit if
+   necessary. */
 static void
 cache_done (int slotid, bool written)
 {
@@ -230,12 +284,34 @@ cache_done (int slotid, bool written)
   lock_release (&slot[slotid].lock);
 }
 
+/* Submits a read-ahead request for the given sector. */
+static void
+cache_ra_request (block_sector_t sector)
+{
+  /* Make sure this request isn't beyond the maximal sector. */
+  if (sector >= block_size (fs_device)) return;
+
+  lock_acquire (&ra_lock);
+
+  /* Set an element of the queue and increment the queue counter. */ 
+  ra_queue[ra_queue_counter % RA_QUEUE_SIZE] = sector;
+  ra_queue_counter++;
+  
+  /* Signal the read-ahead daemon that there's a new request. */
+  cond_signal (&ra_cond, &ra_lock);
+  lock_release (&ra_lock);
+}
+
+/* Reads the given sector from the buffer cache. */
 void
 cache_read (block_sector_t sector, void *buffer, off_t off, unsigned size)
 {
   int slotid = cache_get_slot (sector);
   memcpy (buffer, block[slotid].data + off, size);
   cache_done (slotid, false);
+  
+  /* Submit a read-ahead request for the next sector. */
+  cache_ra_request (sector + 1);
 }
 
 /* Writes the given sector to the buffer cache (and, later, to disk). */

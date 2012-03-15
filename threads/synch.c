@@ -283,8 +283,9 @@ lock_release (struct lock *lock)
       thread_calculate_priority (thread_current ());
     }
   
+  lock->holder = NULL;
   /* NOTE : It's possible that we will be preempted by sema_up. */
-  sema_up (&lock->semaphore); 
+  sema_up (&lock->semaphore);
   intr_set_level (old_level);
 }
 
