@@ -68,6 +68,8 @@ filesys_split_path (const char *path, char *element)
     }
 }
 
+/* Checks that the given name is actually a valid filesystem name. To do so,
+   we simply check that each component of the name is <= NAME_MAX in length. */
 static bool
 filesys_name_valid (const char *name)
 {
@@ -160,12 +162,16 @@ filesys_create (const char *name, off_t initial_size)
   return filesys_do_create (name, initial_size, false);
 }
 
+/* Creates a directory named NAME. Returns success. */
 bool
 filesys_create_dir (const char *name)
 {
   return filesys_do_create (name, 0, true);
 }
 
+/* Looks up the given file path, starting in the directory whose sector is
+   given. Returns the sector of the file if found, or -1 if the path does not
+   match an existing file/directory. */
 static int
 filesys_lookup_recursive (const char *path, block_sector_t sector)
 {
@@ -176,7 +182,6 @@ filesys_lookup_recursive (const char *path, block_sector_t sector)
 
   while (true)
     {
-      //printf ("\tlooking for <%s> in sector %d...\n", cpath, sector);
       len = strlen (cpath);      
 
       /* If the length of the path is zero, it means that we've found what we
@@ -197,15 +202,30 @@ filesys_lookup_recursive (const char *path, block_sector_t sector)
           continue;
         }
 
+      /* Determine the first component of the path. */
       size_t next_slash = strcspn (cpath, "/");
       char lookup_buf [next_slash + 1];
       strlcpy (lookup_buf, cpath, next_slash + 1);
       
+      /* Open the parent directory and look for the component. */
       struct file *dir = file_open (inode_open (sector));
+
+      /* Make sure that the parent is actually a directory. */
+      if (!file_is_dir (dir))
+        {
+          file_close (dir);
+          return -1;
+        }
+
+      /* Search for the component in the parent directory. */
       file_lock (dir);
       int next_sector = dir_lookup (dir, lookup_buf);
       file_unlock (dir);
       file_close (dir);
+
+      /* If we couldn't find it, then return -1. Otherwise, continue the
+         lookup by advancing the cpath pointer to the next component and
+         modifying the sector to reflect the new sector that we just found. */
 
       if (next_sector < 0)
         return -1;
@@ -218,19 +238,24 @@ filesys_lookup_recursive (const char *path, block_sector_t sector)
     }
 }
 
+/* Looks up NAME in the file system, returning the disk sector associated with
+   NAME's inode, or -1 if no such file or directory exists in the file system.
+   Makes use of the thread's current working directory if a relative path is
+   given. */
 int
 filesys_lookup (const char *name)
 {
   int len = strlen (name);
   if (len == 0)
     return -1;
-  //printf ("Looking up file <%s>.\n", name);
+
   int sector;
+  /* If the name starts with a forward slash, then use the root directory as
+     the base for the lookup. Otherwise, use the current thread's cwd. */
   if (name[0] == '/')
     sector = filesys_lookup_recursive (name, ROOT_DIR_SECTOR);
   else
     sector = filesys_lookup_recursive (name, thread_current ()->cwd);
-  //printf ("Result: sector %d.\n", sector);
   return sector;
 }
 
@@ -256,7 +281,6 @@ filesys_open (const char *name)
 bool
 filesys_remove (const char *name) 
 {
-  //printf ("Removing <%s>...\n", name);
   char name_short[NAME_MAX + 1];
   int parent_sector = filesys_split_path (name, name_short);
   
