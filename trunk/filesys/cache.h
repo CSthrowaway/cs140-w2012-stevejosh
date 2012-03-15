@@ -1,6 +1,7 @@
 #include "devices/block.h"
 #include <stdbool.h>
 
+/* Number of disk blocks stored in the buffer cache. */
 #define CACHE_SIZE 64
 
 void cache_init (void);

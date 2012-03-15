@@ -88,8 +88,9 @@ dir_readdir (struct file *dir, char *buf)
 {
   ASSERT (file_is_dir (dir));
   bool locked = file_lock (dir);
+
   /* If the cursor is before the third entry, then it's pointing at "." or "..",
-     since there are *always* the first two directory entries. Seek to beyond
+     since these are *always* the first two directory entries. Seek to beyond
      them, since we don't want to return them. */
   off_t min_cursor = 2 * sizeof (struct dir_entry);
   if (file_tell (dir) < min_cursor)
@@ -127,12 +128,11 @@ lookup (struct file *dir, const char *name, off_t *out_ofs,
   
   int return_value = -1;
 
+  /* Search the directory for the given element. */
   size_t dir_size = inode_length (dir->inode);
-  //printf ("Scanning dir %d (%d entries) for %s.\n", inode_get_inumber (dir->inode), dir_size / sizeof(e), name);
   for (ofs = 0; ofs < dir_size; ofs += sizeof e) 
     {
       inode_read_at (dir->inode, &e, sizeof e, ofs);
-      //printf ("\t%s match?\n", e.name);
       if (e.in_use && !strcmp (name, e.name))
         {
           if (out_ofs)    *out_ofs = ofs;
@@ -144,6 +144,9 @@ lookup (struct file *dir, const char *name, off_t *out_ofs,
   return return_value;
 }
 
+/* Searches for the element with the given name in the given directory.
+   Returns the sector of the given element, or -1 if the element was not found
+   in dir. */
 int
 dir_lookup (struct file *dir, const char *name)
 {

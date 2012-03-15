@@ -27,7 +27,7 @@ struct inode
     int open_cnt;                       /* Number of openers. */
     bool removed;                       /* True if deleted, false otherwise. */
     int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
-    struct lock lock;
+    struct lock lock;                   /* Lock for changing inode metadata. */
   };
 
 /* On-disk inode.
@@ -111,18 +111,6 @@ byte_to_sector (const struct inode *inode, off_t pos)
   return block_to_sector (&in, pos / BLOCK_SECTOR_SIZE);
 }
 
-void
-inode_print (const struct inode *inode)
-{
-  struct inode_disk in;
-  cache_read (inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
-  printf ("[%p]: %d blocks\n", inode, in.blocks);
-  int i;
-  for (i = 0; i < in.blocks; ++i)
-    printf ("%d->%d ", i, block_to_sector (&in, i));
-  printf ("\n");
-}
-
 /* List of open inodes, so that opening a single inode twice
    returns the same `struct inode'. */
 static struct list open_inodes;
@@ -178,11 +166,15 @@ inode_extend_block (struct inode_disk *inode)
   ASSERT (blocks < INODE_L2_END);
   int new_sector;
 
+  /* If we've reached the maximum number of L0 blocks, then we'll need to
+     allocate an extra block for the indirect (L1) block. */
   if (blocks == INODE_L0_BLOCKS)
     {
       if ((new_sector = allocate_zeroed_block ()) < 0) return false;
       inode->l1 = new_sector;
     }
+  /* If we've hit the capacity of the L0 + L1 blocks, then we need to allocate
+     a block to house the double-indirect (L2) block. */
   if (blocks == INODE_L1_END)
     {
       if ((new_sector = allocate_zeroed_block ()) < 0) return false;
@@ -386,7 +378,7 @@ inode_close (struct inode *inode)
       /* Deallocate blocks if removed. */
       if (inode->removed)
         {
-          /* walk through the inode's allocated blocks, freeing them one at
+          /* Walk through the inode's allocated blocks, freeing them one at
              a time. */
           struct inode_disk in;
           cache_read (inode->sector, &in, 0, BLOCK_SECTOR_SIZE);
