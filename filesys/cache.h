@@ -10,3 +10,4 @@ void cache_write (block_sector_t sector, const void *data,
                   off_t off, unsigned size);
 void cache_zero (block_sector_t sector);
 void cache_flush (void);
+void cache_ra_request (block_sector_t sector);
