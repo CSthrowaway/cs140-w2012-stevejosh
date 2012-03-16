@@ -35,26 +35,26 @@ Steve Lesser <sklesser@stanford.edu>
   struct inode
     {
       ...
-      struct lock lock;                   /* Lock for changing inode metadata. */
+      struct lock lock;                 /* Lock for changing inode metadata. */
     };
 
   /* On-disk inode.
      Must be exactly BLOCK_SECTOR_SIZE bytes long. */
   struct inode_disk
     {
-      off_t length;                           /* File size in bytes. */
-      unsigned magic;                         /* Magic number. */
-      uint32_t blocks;                        /* Number of allocated blocks. */
-      uint32_t status;                        /* Status bits. */
-      uint32_t l2;                            /* Sector of doubly indirect block. */
-      uint32_t l1;                            /* Sector of indirect block. */
-      uint32_t l0[INODE_L0_BLOCKS];           /* Direct block sectors. */
+      off_t length;                       /* File size in bytes. */
+      unsigned magic;                     /* Magic number. */
+      uint32_t blocks;                    /* Number of allocated blocks. */
+      uint32_t status;                    /* Status bits. */
+      uint32_t l2;                        /* Sector of doubly indirect block. */
+      uint32_t l1;                        /* Sector of indirect block. */
+      uint32_t l0[INODE_L0_BLOCKS];       /* Direct block sectors. */
     };
     
   /* Top part of the on-disk inode, only includes metadata (no block sectors).
      This structure is useful for reading meta-information about a sector
-     without having to store a large structure on the stack. This helps to avoid
-     kernel stack overflow. */
+     without having to store a large structure on the stack.
+     This helps to avoid kernel stack overflow. */
   struct inode_disk_meta
     {
       off_t length;                           /* File size in bytes. */
@@ -198,8 +198,8 @@ sector as we go. When we hit the final component, we return the dir lookup
 of that component in the current parent.
 
 This method has two advantages: A) It's unified with respect to the iterative
-stripping away of components B) It's unified with respect to the current
-working directory (both absolute and relative lookups leverage the same code,
+stripping away of components and B) It's unified with respect to the starting
+lookup directory (both absolute and relative lookups leverage the same code,
 just passing a different parent sector as an argument)
 
 ---- SYNCHRONIZATION ----
@@ -233,7 +233,7 @@ current working directory.
 >> B6: Explain why you chose to represent the current directory of a
 >> process the way you did.
 
-We chose to store the current directory's inode sector in the processes'
+We chose to store the current directory's inode sector in the process'
 thread structure. This is convenient because our pathname lookup function
 uses sectors to keep track of the current parent directory. Since we store
 sectors as the current directory, it is extremely easy to just pass the
@@ -428,3 +428,5 @@ locking, it's going to come with the possibility of a read blocking another
 read.
 
 >> Any other comments?
+
+We have thoroughly enjoyed this class :)
