@@ -111,6 +111,14 @@ byte_to_sector (const struct inode *inode, off_t pos)
   return block_to_sector (&in, pos / BLOCK_SECTOR_SIZE);
 }
 
+static int
+inode_get_blocks (const struct inode *inode)
+{
+  struct inode_disk_meta in;
+  cache_read(inode->sector, &in, 0, sizeof in);
+  return in.blocks;
+}
+
 /* List of open inodes, so that opening a single inode twice
    returns the same `struct inode'. */
 static struct list open_inodes;
@@ -445,6 +453,8 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       bytes_read += chunk_size;
     }
 
+  //cache_ra_request (block_sector_t 
+  
   return bytes_read;
 }
 
@@ -472,14 +482,29 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   if (inode_left < size)
     {
       locked = inode_lock (inode);
+      /* Recompute the remaining inode length, as it may have changed while we
+         didn't own the lock. */
+      inode_left = (inode_length (inode) - offset);
       grow_size = size - inode_left;
-      
-      /* If we failed to extend the inode, then we'll just say that this entire
-         operation failed. We've run out of disk space. */
-      if (!inode_extend (inode, grow_size))
+  
+      /* If the inode has been extended by someone else to the point that we
+         no longer need to extend it, then we can just release the lock and
+         carry on with our writing. Since we are guaranteed to have enough
+         space for the operation, we don't need to lock the inode. */    
+      if (grow_size <= 0)
         {
           if (locked) inode_unlock (inode);
-          return 0;
+          locked = false;
+        }
+      else
+        {
+          /* If we failed to extend the inode, then we'll just say that this entire
+             operation failed. We've run out of disk space. */
+          if (!inode_extend (inode, grow_size))
+            {
+              if (locked) inode_unlock (inode);
+              return 0;
+            }
         }
     }
 
