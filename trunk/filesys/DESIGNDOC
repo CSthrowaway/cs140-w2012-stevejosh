@@ -362,6 +362,10 @@ same when reading requests). The process also signals the daemon via the
 global condition variable, so that the daemon knows about the new request
 without busy-waiting.
 
+Note that requests are made from within inode.c, in inode_read_at. If the
+inode extends beyond the last sector from which we read, then we issue a
+read-ahead request for the next block in the file.
+
 ---- SYNCHRONIZATION ----
 
 >> C5: When one process is actively reading or writing data in a
@@ -385,6 +389,31 @@ that is in the process of eviction.
 
 >> C7: Describe a file workload likely to benefit from buffer caching,
 >> and workloads likely to benefit from read-ahead and write-behind.
+
+Buffer caching benefits file workloads consisting of multiple reads
+and/or writes to blocks which have recently been accessed, such as
+each file's metadata block. This also arises in situations such as
+seeking around a large file and having to repeatedly access an
+indirect or doubly indirect block to know which blocks to load.
+Executable files also receive a lot of benefit from buffer caches
+because once an executable file block has been loaded it is likely
+that it will be accessed many times to retrieve the next instruction.
+
+Read-ahead benefits file workloads consisting of sequential accesses
+to adjacent file blocks. Examples of this is reading multiple blocks
+of data from a file in which the file's blocks were allocated
+sequentially such as reading a large file into a buffer. Executable
+file loading may also benefit from read-ahead since once an executable
+block is loaded it is likely that the next executable block will soon
+be loaded (unless the program crashes or there are heavy use of jumps
+in the code base).
+
+Write-behind benefits file workloads consisting of many small writes
+to the same block. Examples of this include incrementally writing a
+small number of bytes to a file block instead of writing out a single
+large buffer. Also, filling in indirect or doubly-indirect blocks when
+slowly extending a file will consist of multiple writes to the same
+blocks which will be much more efficient when aggregated.
 
 			   SURVEY QUESTIONS
 			   ================
