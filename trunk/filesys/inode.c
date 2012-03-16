@@ -445,6 +445,8 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       bytes_read += chunk_size;
     }
 
+  /* If there's still another block left in this file, issue a cache
+     read-ahead request for it, in anticipation of the next read. */
   if (inode_length (inode) > offset + BLOCK_SECTOR_SIZE)
     cache_ra_request (byte_to_sector (inode, offset + BLOCK_SECTOR_SIZE));
 
