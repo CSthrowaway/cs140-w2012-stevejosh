@@ -111,14 +111,6 @@ byte_to_sector (const struct inode *inode, off_t pos)
   return block_to_sector (&in, pos / BLOCK_SECTOR_SIZE);
 }
 
-static int
-inode_get_blocks (const struct inode *inode)
-{
-  struct inode_disk_meta in;
-  cache_read(inode->sector, &in, 0, sizeof in);
-  return in.blocks;
-}
-
 /* List of open inodes, so that opening a single inode twice
    returns the same `struct inode'. */
 static struct list open_inodes;
@@ -453,8 +445,9 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       bytes_read += chunk_size;
     }
 
-  //cache_ra_request (block_sector_t 
-  
+  if (inode_length (inode) >= offset + BLOCK_SECTOR_SIZE)
+    cache_ra_request (byte_to_sector (inode, offset + BLOCK_SECTOR_SIZE));
+
   return bytes_read;
 }
 
