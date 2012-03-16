@@ -445,7 +445,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       bytes_read += chunk_size;
     }
 
-  if (inode_length (inode) >= offset + BLOCK_SECTOR_SIZE)
+  if (inode_length (inode) > offset + BLOCK_SECTOR_SIZE)
     cache_ra_request (byte_to_sector (inode, offset + BLOCK_SECTOR_SIZE));
 
   return bytes_read;
